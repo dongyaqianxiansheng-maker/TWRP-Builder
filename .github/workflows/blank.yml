@@ -1,0 +1,203 @@
+name: TWRP Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      DEVICE_NAME:
+        description: '设备名称 (如: munch)'
+        required: true
+        default: 'munch'
+      MANUFACTURER:
+        description: '厂商名称 (如: xiaomi)'
+        required: true
+        default: 'xiaomi'
+      MANIFEST_BRANCH:
+        description: 'TWRP manifest分支'
+        required: true
+        default: 'twrp-12.1'
+      BOOT_IMG_URL:
+        description: 'boot.img下载链接'
+        required: true
+      BUILD_TARGET:
+        description: '构建目标'
+        required: true
+        default: 'bootimage'
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: Setup environment
+      run: |
+        echo "=== 设置环境变量 ==="
+        echo "DEVICE_NAME=${{ github.event.inputs.DEVICE_NAME }}" >> $GITHUB_ENV
+        echo "MANUFACTURER=${{ github.event.inputs.MANUFACTURER }}" >> $GITHUB_ENV
+        echo "MANIFEST_BRANCH=${{ github.event.inputs.MANIFEST_BRANCH }}" >> $GITHUB_ENV
+        echo "BUILD_TARGET=${{ github.event.inputs.BUILD_TARGET }}" >> $GITHUB_ENV
+    
+    - name: Install dependencies
+      run: |
+        echo "=== 安装依赖包 ==="
+        sudo apt-get update
+        sudo apt-get install -y git-core gnupg flex bison build-essential zip curl \
+        zlib1g-dev gcc-multilib g++-multilib libc6-dev-i386 lib32ncurses5-dev \
+        x11proto-core-dev libx11-dev lib32z1-dev libgl1-mesa-dev libxml2-utils \
+        xsltproc unzip fontconfig libncurses5 libncurses5-dev openjdk-8-jdk \
+        python3 python3-pip git-lfs bc rsync schedtool squashfs-tools
+    
+    - name: Install Python 2
+      run: |
+        echo "=== 安装 Python 2 ==="
+        sudo apt-get install -y software-properties-common
+        sudo add-apt-repository -y ppa:deadsnakes/ppa
+        sudo apt-get update
+        sudo apt-get install -y python2.7
+        sudo ln -sf /usr/bin/python2.7 /usr/bin/python
+        python --version
+    
+    - name: Set up Git
+      run: |
+        echo "=== 设置 Git 配置 ==="
+        git config --global user.email "github-actions@github.com"
+        git config --global user.name "GitHub Actions"
+        git config --global color.ui auto
+        git lfs install
+    
+    - name: Install repo tool
+      run: |
+        echo "=== 安装 repo 工具 ==="
+        mkdir -p ~/bin
+        curl -s https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
+        chmod a+x ~/bin/repo
+        echo 'export PATH="$HOME/bin:$PATH"' >> ~/.bashrc
+        echo 'export PATH="$HOME/bin:$PATH"' >> $GITHUB_ENV
+    
+    - name: Initialize workspace
+      run: |
+        echo "=== 初始化工作区 ==="
+        mkdir -p workspace
+        cd workspace
+        echo "当前目录: $(pwd)"
+    
+    - name: Initialize TWRP repository
+      run: |
+        echo "=== 初始化 TWRP 仓库 ==="
+        cd workspace
+        repo init -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git \
+          -b ${{ github.event.inputs.MANIFEST_BRANCH }} \
+          --depth=1
+    
+    - name: Sync repository
+      run: |
+        echo "=== 同步仓库 ==="
+        cd workspace
+        repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags
+    
+    - name: Download boot.img
+      run: |
+        echo "=== 下载 boot.img ==="
+        cd workspace
+        mkdir -p boot_images
+        curl -L "${{ github.event.inputs.BOOT_IMG_URL }}" -o boot_images/boot.img
+        echo "boot.img 大小: $(ls -lh boot_images/boot.img)"
+    
+    - name: Install twrpdtgen
+      run: |
+        echo "=== 安装 twrpdtgen ==="
+        pip3 install twrpdtgen
+    
+    - name: Generate device tree
+      run: |
+        echo "=== 生成设备树 ==="
+        cd workspace
+        mkdir -p device
+        cd device
+        
+        # 使用 twrpdtgen 生成设备树
+        if [ -f "../boot_images/boot.img" ]; then
+          python3 -m twrpdtgen -o "${{ github.event.inputs.MANUFACTURER }}/${{ github.event.inputs.DEVICE_NAME }}" \
+            "../boot_images/boot.img"
+          echo "设备树生成完成"
+        else
+          echo "错误: boot.img 文件不存在"
+          exit 1
+        fi
+    
+    - name: Setup build environment
+      run: |
+        echo "=== 设置构建环境 ==="
+        cd workspace
+        source build/envsetup.sh
+        lunch "omni_${{ github.event.inputs.DEVICE_NAME }}-eng"
+        export ALLOW_MISSING_DEPENDENCIES=true
+        export LC_ALL=C
+        export USE_CCACHE=1
+        export CCACHE_EXEC=$(which ccache)
+        ccache -M 50G
+        ccache -o compression=true
+    
+    - name: Start build
+      run: |
+        echo "=== 开始构建 ==="
+        cd workspace
+        source build/envsetup.sh
+        lunch "omni_${{ github.event.inputs.DEVICE_NAME }}-eng"
+        export ALLOW_MISSING_DEPENDENCIES=true
+        
+        # 根据输入选择构建目标
+        if [ "${{ github.event.inputs.BUILD_TARGET }}" = "recoveryimage" ]; then
+          mka recoveryimage
+        elif [ "${{ github.event.inputs.BUILD_TARGET }}" = "bootimage" ]; then
+          mka bootimage
+        else
+          mka ${{ github.event.inputs.BUILD_TARGET }}
+        fi
+    
+    - name: List output files
+      run: |
+        echo "=== 输出文件列表 ==="
+        cd workspace
+        find out/target/product/${{ github.event.inputs.DEVICE_NAME }} -type f -name "*.img" -o -name "*.zip" | xargs ls -lh
+    
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: twrp-build-${{ github.event.inputs.DEVICE_NAME }}
+        path: |
+          workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*.img
+          workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*.zip
+        retention-days: 7
+    
+    - name: Create GitHub Release
+      if: success()
+      uses: softprops/action-gh-release@v2
+      with:
+        files: |
+          workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/${{ github.event.inputs.BUILD_TARGET }}.img
+          workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*.zip
+          workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*vendor*.img
+        name: ${{ github.event.inputs.DEVICE_NAME }}-${{ github.run_id }}
+        tag_name: build-${{ github.run_id }}
+        body: |
+          ### TWRP 构建结果
+          
+          **构建信息:**
+          - 设备: ${{ github.event.inputs.DEVICE_NAME }}
+          - 厂商: ${{ github.event.inputs.MANUFACTURER }}
+          - Manifest 分支: ${{ github.event.inputs.MANIFEST_BRANCH }}
+          - 构建目标: ${{ github.event.inputs.BUILD_TARGET }}
+          - 运行 ID: ${{ github.run_id }}
+          - 触发时间: ${{ github.event.inputs.TRIGGER_TIME || github.event.created_at }}
+          
+          **注意事项:**
+          1. 此构建为自动化构建，请自行测试
+          2. 刷机有风险，请提前备份数据
+          3. 建议在官方 Recovery 下刷入
+        draft: false
+        prerelease: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
