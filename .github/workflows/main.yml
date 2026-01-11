@@ -1,386 +1,176 @@
-name: TWRP Build
+name: Recovery Build Legacy
 
 on:
   workflow_dispatch:
     inputs:
-      DEVICE_NAME:
-        description: '设备名称（如: davinci）'
+      MANIFEST_URL:
+        description: 'MANIFEST_URL (if want to use SSH keys, use git@github.com:XXXXX)'
         required: true
-        default: ''
-      MANUFACTURER:
-        description: '厂商名称（如: xiaomi）'
-        required: true
-        default: ''
+        default: 'https://github.com/minimal-manifest-twrp/platform_manifest_twrp_omni'
       MANIFEST_BRANCH:
-        description: 'manifest分支'
+        description: 'MANIFEST_BRANCH'
         required: true
-        default: 'twrp-12.1'
+        default: 'twrp-7.1'
+      DEVICE_TREE_URL:
+        description: 'DEVICE_TREE_URL'
+        required: true
+        default: 'https://github.com/ycly2333/android_device_EEBBK_H3000S-twrp'
+      DEVICE_TREE_BRANCH:
+        description: 'DEVICE_TREE_BRANCH'
+        required: true
+        default: 'twrp-7.1'
+      DEVICE_PATH:
+        description: 'DEVICE_PATH'
+        required: true
+        default: 'device/EEBBK/H3000S'
+      COMMON_TREE_URL:
+        description: 'COMMON_TREE_URL (if no common tree, leave blank)'
+        required: false
+      COMMON_PATH:
+        description: 'COMMON_PATH (if no common tree, leave blank)'
+        required: false
+      DEVICE_NAME:
+        description: 'DEVICE_NAME'
+        required: true
+        default: 'H3000S'
+      MAKEFILE_NAME:
+        description: 'MAKEFILE_NAME'
+        required: true
+        default: 'omni_H3000S'
       BUILD_TARGET:
-        description: '构建目标（recoveryimage 或 bootimage）'
+        description: 'BUILD_TARGET'
         required: true
-        default: 'recoveryimage'
-        type: choice
-        options:
-          - recoveryimage
-          - bootimage
-      DEVICE_TREE_SOURCE:
-        description: '设备树来源'
-        required: true
-        default: 'prebuilt'
-        type: choice
-        options:
-          - prebuilt
-          - generate
-          - external
-      BOOT_IMG_URL:
-        description: 'boot.img下载链接（仅当选择generate时使用）'
-        required: false
-        default: ''
-      EXTERNAL_DEVICE_TREE_URL:
-        description: '外部设备树仓库URL（仅当选择external时使用）'
-        required: false
-        default: ''
-      EXTERNAL_DEVICE_TREE_BRANCH:
-        description: '外部设备树分支'
-        required: false
-        default: 'main'
-      SYNC_METHOD:
-        description: '同步方式'
-        required: true
-        default: 'shallow'
-        type: choice
-        options:
-          - full
-          - shallow
-      CREATE_RELEASE:
-        description: '是否创建Release'
-        required: true
-        default: 'false'
-        type: choice
-        options:
-          - 'true'
-          - 'false'
+        default: 'recovery'
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
-    timeout-minutes: 180
-    
+    if: github.event.repository.owner.id == github.event.sender.id
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
     steps:
-    - name: Checkout repository
+    - name: Display Run Parameters
+      run: |
+        echo "::group::User Environment Variables"
+        echo "Manifest URL: ${{ github.event.inputs.MANIFEST_URL }}"
+        echo "Manifest Branch: ${{ github.event.inputs.MANIFEST_BRANCH }}"
+        echo "Device Tree URL: ${{ github.event.inputs.DEVICE_TREE_URL }}"
+        echo "Device Tree Branch: ${{ github.event.inputs.DEVICE_TREE_BRANCH }}"
+        echo "Device Path: ${{ github.event.inputs.DEVICE_PATH }}"
+        echo "Device Name: ${{ github.event.inputs.DEVICE_NAME }}"
+        echo "Makefile Name: ${{ github.event.inputs.MAKEFILE_NAME }}"
+        echo "Build Target: ${{ github.event.inputs.BUILD_TARGET }}.img"
+        echo "::endgroup::"
+
+    # You might want to Checkout your repo first, but not mandatory
+    - name: Check Out
       uses: actions/checkout@v4
-      
-    - name: Setup environment
+
+    # Cleanup The Actions Workspace Using Custom Composite Run Actions
+    - name: Cleanup
+      uses: rokibhasansagar/slimhub_actions@main
+      # That's it! Now use your normal steps
+
+    - name: Prepare the environment
       run: |
-        echo "=== 安装依赖包 ==="
-        sudo apt-get update
-        sudo apt-get install -y git-core gnupg flex bison build-essential zip curl \
-        zlib1g-dev gcc-multilib g++-multilib libc6-dev-i386 lib32ncurses5-dev \
-        x11proto-core-dev libx11-dev lib32z1-dev libgl1-mesa-dev libxml2-utils \
-        xsltproc unzip fontconfig libncurses5 libncurses5-dev openjdk-8-jdk \
-        python3 python3-pip python2
-        
-        # 建立软链接
-        sudo ln -sf /usr/bin/python2 /usr/bin/python
-        
-        # 验证版本
-        python --version
-        
-        # 设置Git用户信息
-        git config --global user.email "github-actions@github.com"
-        git config --global user.name "GitHub Actions"
-        
-        # 配置Git以优化大仓库性能
-        git config --global core.compression 0
-        git config --global http.postBuffer 1048576000
-        git config --global https.postBuffer 1048576000
-        
-    - name: Setup repo tool
-      run: |
-        # 下载repo工具
-        mkdir -p ~/bin
-        curl -s https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
-        chmod a+x ~/bin/repo
-        
-        # 添加到PATH
-        echo "$HOME/bin" >> $GITHUB_PATH
-        
-    - name: Verify repo tool
-      run: |
-        which repo
-        repo --version
-        
-    - name: Initialize repo with retry
-      id: init_repo
-      run: |
-        echo "=== 初始化仓库 ==="
-        echo "当前工作目录: $(pwd)"
-        
-        # 创建工作目录
-        mkdir -p twrp-aosp
-        cd twrp-aosp
-        
-        # 设置repo配置
-        export REPO_URL='https://gerrit.googlesource.com/git-repo'
-        
-        # 尝试初始化，最多重试3次
-        for i in {1..3}; do
-          echo "第 $i 次尝试初始化仓库..."
-          
-          if [ "${{ github.event.inputs.SYNC_METHOD }}" = "shallow" ]; then
-            repo init --depth=1 -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git -b ${{ github.event.inputs.MANIFEST_BRANCH }} --repo-url=$REPO_URL
-          else
-            repo init -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git -b ${{ github.event.inputs.MANIFEST_BRANCH }} --repo-url=$REPO_URL
-          fi
-          
-          if [ $? -eq 0 ]; then
-            echo "✅ 仓库初始化成功"
-            break
-          else
-            echo "❌ 初始化失败，等待10秒后重试..."
-            sleep 10
-            rm -rf .repo
-          fi
-        done
-        
-        # 检查是否初始化成功
-        if [ ! -d ".repo" ]; then
-          echo "❌ 仓库初始化失败，请检查网络连接或manifest URL"
-          exit 1
-        fi
-        
-    - name: Sync repo with timeout and retry
-      id: sync_repo
-      timeout-minutes: 60
-      run: |
-        echo "=== 同步仓库代码 ==="
-        echo "当前工作目录: $(pwd)"
-        
-        # 进入工作目录
-        cd twrp-aosp
-        
-        # 设置环境变量以优化同步
-        export REPO_SYNC_FLAGS="-j$(nproc) --no-clone-bundle --no-tags"
-        
-        # 尝试同步，最多重试3次
-        for i in {1..3}; do
-          echo "第 $i 次尝试同步仓库..."
-          echo "开始时间: $(date)"
-          
-          # 使用timeout命令防止无限等待
-          timeout 1800 repo sync $REPO_SYNC_FLAGS
-          SYNC_EXIT_CODE=$?
-          
-          echo "结束时间: $(date)"
-          
-          if [ $SYNC_EXIT_CODE -eq 0 ]; then
-            echo "✅ 仓库同步成功"
-            break
-          elif [ $SYNC_EXIT_CODE -eq 124 ]; then
-            echo "⚠️ 同步超时，清理后重试..."
-            # 清理部分下载的内容
-            find .repo/project-objects -name "*.tmp" -delete 2>/dev/null || true
-            find .repo/projects -name "*.lock" -delete 2>/dev/null || true
-            sleep 10
-          else
-            echo "❌ 同步失败，退出码: $SYNC_EXIT_CODE"
-            echo "等待30秒后重试..."
-            sleep 30
-          fi
-        done
-        
-        # 检查同步是否成功
-        if [ ! -d "bootable/recovery" ]; then
-          echo "❌ 仓库同步不完整，缺少关键目录"
-          echo "当前目录结构:"
-          ls -la
-          exit 1
-        fi
-        
-        echo "✅ 仓库同步完成"
-        echo "同步后的目录大小:"
-        du -sh .
-        
-    - name: Handle prebuilt device tree
-      if: ${{ github.event.inputs.DEVICE_TREE_SOURCE == 'prebuilt' }}
-      run: |
-        echo "=== 使用预置设备树 ==="
-        echo "当前工作目录: $(pwd)"
-        
-        # 检查设备树是否存在
-        if [ -d "device/${{ github.event.inputs.MANUFACTURER }}/${{ github.event.inputs.DEVICE_NAME }}" ]; then
-          echo "找到预置设备树，复制到源码目录"
-          mkdir -p twrp-aosp/device/${{ github.event.inputs.MANUFACTURER }}
-          cp -r device/${{ github.event.inputs.MANUFACTURER }}/${{ github.event.inputs.DEVICE_NAME }} twrp-aosp/device/${{ github.event.inputs.MANUFACTURER }}/
-        else
-          echo "错误：未找到预置设备树"
-          echo "请确保设备树位于：device/${{ github.event.inputs.MANUFACTURER }}/${{ github.event.inputs.DEVICE_NAME }}"
-          exit 1
-        fi
-        
-    - name: Generate device tree from boot.img
-      if: ${{ github.event.inputs.DEVICE_TREE_SOURCE == 'generate' && github.event.inputs.BOOT_IMG_URL != '' }}
-      run: |
-        echo "=== 从boot.img生成设备树 ==="
-        cd twrp-aosp
-        
-        # 安装twrpdtgen
-        pip3 install twrpdtgen
-        
-        # 创建设备目录
-        mkdir -p device/${{ github.event.inputs.MANUFACTURER }}
-        
-        # 下载boot.img
-        echo "下载boot.img..."
-        wget --timeout=60 --tries=3 -O boot.img "${{ github.event.inputs.BOOT_IMG_URL }}"
-        
-        # 生成设备树
-        echo "生成设备树..."
-        python3 -m twrpdtgen -o device/${{ github.event.inputs.MANUFACTURER }}/${{ github.event.inputs.DEVICE_NAME }} boot.img
-        
-        # 清理临时文件
-        rm -f boot.img
-        
-    - name: Clone external device tree
-      if: ${{ github.event.inputs.DEVICE_TREE_SOURCE == 'external' && github.event.inputs.EXTERNAL_DEVICE_TREE_URL != '' }}
-      run: |
-        echo "=== 克隆外部设备树 ==="
-        cd twrp-aosp
-        
-        # 创建设备目录
-        mkdir -p device/${{ github.event.inputs.MANUFACTURER }}
-        cd device/${{ github.event.inputs.MANUFACTURER }}
-        
-        # 克隆外部设备树
-        echo "克隆设备树仓库..."
-        git clone --depth=1 --single-branch -b ${{ github.event.inputs.EXTERNAL_DEVICE_TREE_BRANCH }} \
-          "${{ github.event.inputs.EXTERNAL_DEVICE_TREE_URL }}" \
-          ${{ github.event.inputs.DEVICE_NAME }}
-        
-        # 检查是否克隆成功
-        if [ -d "${{ github.event.inputs.DEVICE_NAME }}" ]; then
-          echo "设备树克隆成功"
-        else
-          echo "错误：设备树克隆失败"
-          exit 1
-        fi
-        
-    - name: Validate device tree
-      run: |
-        echo "=== 验证设备树 ==="
-        cd twrp-aosp
-        
-        DEVICE_TREE_PATH="device/${{ github.event.inputs.MANUFACTURER }}/${{ github.event.inputs.DEVICE_NAME }}"
-        
-        if [ -d "$DEVICE_TREE_PATH" ]; then
-          echo "设备树存在：$DEVICE_TREE_PATH"
-          echo "设备树内容："
-          ls -la "$DEVICE_TREE_PATH/"
-          
-          # 检查必要的文件
-          if [ -f "$DEVICE_TREE_PATH/AndroidProducts.mk" ] || [ -f "$DEVICE_TREE_PATH/device.mk" ] || [ -f "$DEVICE_TREE_PATH/BoardConfig.mk" ]; then
-            echo "设备树文件结构正常"
-          else
-            echo "警告：设备树可能缺少必要的配置文件"
-          fi
-        else
-          echo "错误：设备树不存在"
-          echo "请检查设备树路径：$DEVICE_TREE_PATH"
-          exit 1
-        fi
-        
-    - name: Build TWRP
-      timeout-minutes: 120
-      run: |
-        echo "=== 开始编译TWRP ==="
-        cd twrp-aosp
-        
-        # 加载编译环境变量
-        source build/envsetup.sh
-        
-        # 使用lunch命令指定设备
-        echo "选择设备：omni_${{ github.event.inputs.DEVICE_NAME }}-eng"
-        lunch omni_${{ github.event.inputs.DEVICE_NAME }}-eng
-        
-        # 设置环境变量
-        export ALLOW_MISSING_DEPENDENCIES=true
-        
-        # 开始编译
-        echo "编译目标：${{ github.event.inputs.BUILD_TARGET }}"
-        if [ "${{ github.event.inputs.BUILD_TARGET }}" = "bootimage" ]; then
-          mka bootimage
-        else
-          mka recoveryimage
-        fi
-        
-    - name: List build artifacts
-      run: |
-        echo "=== 编译产物列表 ==="
-        cd twrp-aosp
-        
-        BUILD_OUT_DIR="out/target/product/${{ github.event.inputs.DEVICE_NAME }}"
-        
-        if [ -d "$BUILD_OUT_DIR" ]; then
-          echo "编译产物目录：$BUILD_OUT_DIR"
-          find "$BUILD_OUT_DIR" -type f \( -name "*.img" -o -name "*.zip" \) | sort
-          
-          # 检查主要产物
-          if [ "${{ github.event.inputs.BUILD_TARGET }}" = "bootimage" ]; then
-            if [ -f "$BUILD_OUT_DIR/boot.img" ]; then
-              echo "✅ boot.img 编译成功"
-              ls -lh "$BUILD_OUT_DIR/boot.img"
-            else
-              echo "❌ boot.img 未找到"
-            fi
-          else
-            if [ -f "$BUILD_OUT_DIR/recovery.img" ]; then
-              echo "✅ recovery.img 编译成功"
-              ls -lh "$BUILD_OUT_DIR/recovery.img"
-            else
-              echo "❌ recovery.img 未找到"
-            fi
-          fi
-        else
-          echo "错误：编译产物目录不存在"
-        fi
-        
-    - name: Upload artifacts
-      uses: actions/upload-artifact@v4
+        sudo apt update && sudo apt upgrade -y
+        DEBIAN_FRONTEND=noninteractive sudo apt install -yq \
+            linux-modules-extra-$(uname -r) \
+            gperf gcc-multilib gcc-10-multilib g++-multilib g++-10-multilib \
+            libc6-dev x11proto-core-dev libx11-dev tree lib32z-dev libgl1-mesa-dev libxml2-utils \
+            xsltproc bc ccache lib32readline-dev lib32z1-dev liblz4-tool libsdl1.2-dev \
+            libwxgtk3.2-dev libxml2 lzop pngcrush schedtool squashfs-tools \
+            imagemagick libbz2-dev lzma ncftp qemu-user-static libstdc++-10-dev libncurses6 python3 tar
+
+    - name: Install OpenJDK
+      uses: actions/setup-java@v4
       with:
-        name: twrp-${{ github.event.inputs.DEVICE_NAME }}-${{ github.run_id }}
-        path: |
-          twrp-aosp/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*.img
-          twrp-aosp/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*.zip
-        retention-days: 7
-        
-    - name: Create Release
-      if: ${{ github.event.inputs.CREATE_RELEASE == 'true' }}
+        distribution: 'zulu'
+        java-version: '11'
+
+    - name: Setup SSH Keys
+      if: ${{ startsWith(github.event.inputs.MANIFEST_URL, 'git@github.com') || 
+          startsWith(github.event.inputs.DEVICE_TREE_URL, 'git@github.com') ||
+          startsWith(github.event.inputs.COMMON_TREE_URL, 'git@github.com') }}
+      uses: webfactory/ssh-agent@v0.9.0
+      with:
+          ssh-private-key: |
+            ${{ secrets.SSH_PRIVATE_KEY }}
+
+    - name: Install repo
+      run: |
+        mkdir ~/bin
+        curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
+        chmod a+x ~/bin/repo
+        sudo ln -sf ~/bin/repo /usr/bin/repo
+
+    - name: Initialize repo
+      run: |
+        mkdir workspace
+        cd workspace
+        echo "workspace-folder=$(pwd)" >> $GITHUB_OUTPUT
+        git config --global user.name "azwhikaru"
+        git config --global user.email "azwhikaru+37921907@github.com"
+        repo init --depth=1 -u ${{ github.event.inputs.MANIFEST_URL }} -b ${{ github.event.inputs.MANIFEST_BRANCH }}
+      id: pwd
+
+    - name: Repo Sync
+      run: |
+        repo sync -j$(nproc --all) --force-sync
+      working-directory: workspace
+
+    - name: Clone device tree
+      run: |
+        git clone ${{ github.event.inputs.DEVICE_TREE_URL }} -b ${{ github.event.inputs.DEVICE_TREE_BRANCH }} ./${{ github.event.inputs.DEVICE_PATH }}
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+
+    - name: Clone common tree
+      if: |
+        github.event.inputs.COMMON_TREE_URL != null
+        && github.event.inputs.COMMON_PATH != null
+      run: |
+        git clone ${{ github.event.inputs.COMMON_TREE_URL }} -b ${{ github.event.inputs.DEVICE_TREE_BRANCH }} ./${{ github.event.inputs.COMMON_PATH }}
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+
+    - name: Sync Device Dependencies
+      run: |
+        bash ${GITHUB_WORKSPACE}/scripts/convert.sh ${{ github.event.inputs.DEVICE_PATH }}/${{ steps.buildtree.outputs.value }}.dependencies
+        repo sync -j$(nproc --all)
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+      continue-on-error: true
+
+    - name: Set Swap Space
+      uses: pierotofy/set-swap-space@master
+      with:
+        swap-size-gb: 12
+
+    - name: Switch to Python2
+      run: |
+        sudo apt -y install python
+        sudo rm -rf /usr/bin/python
+        sudo ln -s /usr/bin/python2 /usr/bin/python
+        # sudo ln -s /usr/bin/python3 /usr/bin/python3
+      continue-on-error: true
+
+    - name: Building recovery
+      run: |
+        source build/envsetup.sh
+        export ALLOW_MISSING_DEPENDENCIES=true
+        lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng && make clean && make ${{ github.event.inputs.BUILD_TARGET }}image -j$(nproc --all)
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+
+    - name: Upload to Release
       uses: softprops/action-gh-release@v2
       with:
-        files: |
-          twrp-aosp/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/${{ github.event.inputs.BUILD_TARGET }}.img
-          twrp-aosp/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*.zip
-        name: TWRP-${{ github.event.inputs.DEVICE_NAME }}-${{ github.run_number }}
-        tag_name: twrp-${{ github.event.inputs.DEVICE_NAME }}-${{ github.run_number }}
+        files: | 
+          workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/${{ github.event.inputs.BUILD_TARGET }}.img
+          workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*.zip
+          workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*vendor*.img
+        name: ${{ github.event.inputs.DEVICE_NAME }}-${{ github.run_id }}
+        tag_name: ${{ github.run_id }}
         body: |
-          # TWRP Build for ${{ github.event.inputs.DEVICE_NAME }}
-          
-          **Build Information:**
-          - Build ID: ${{ github.run_id }}
-          - Device: ${{ github.event.inputs.DEVICE_NAME }}
-          - Manufacturer: ${{ github.event.inputs.MANUFACTURER }}
-          - Manifest Branch: ${{ github.event.inputs.MANIFEST_BRANCH }}
-          - Build Target: ${{ github.event.inputs.BUILD_TARGET }}
-          - Device Tree Source: ${{ github.event.inputs.DEVICE_TREE_SOURCE }}
-          - Sync Method: ${{ github.event.inputs.SYNC_METHOD }}
-          
-          **Build Date:** $(date)
-          
-          **Notes:**
-          - 请确保设备已解锁Bootloader
-          - 刷入前请备份重要数据
-          - 使用 fastboot 刷入: `fastboot flash ${{ github.event.inputs.BUILD_TARGET }} <image_file>`
-        draft: false
-        prerelease: false
+          Manifest: ${{ github.event.inputs.MANIFEST_BRANCH }}
+          Device: ${{ github.event.inputs.DEVICE_NAME }}
+          Target: ${{ github.event.inputs.BUILD_TARGET }}.img
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
