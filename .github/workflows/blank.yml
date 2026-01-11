@@ -38,6 +38,7 @@ on:
 
 env:
   WORKSPACE: /home/runner/work/twrp-build/twrp-build
+  REPO_PATH: /home/runner/bin
 
 jobs:
   build:
@@ -75,13 +76,18 @@ jobs:
     - name: Setup repo tool
       run: |
         # 下载repo工具
-        mkdir -p ~/bin
-        curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
-        chmod a+x ~/bin/repo
+        mkdir -p ${{ env.REPO_PATH }}
+        curl https://storage.googleapis.com/git-repo-downloads/repo > ${{ env.REPO_PATH }}/repo
+        chmod a+x ${{ env.REPO_PATH }}/repo
         
-        # 添加到环境变量
-        echo 'export PATH=~/bin:$PATH' >> ~/.bashrc
-        echo 'export PATH=~/bin:$PATH' >> $GITHUB_ENV
+        # 添加到当前shell的PATH
+        echo "${{ env.REPO_PATH }}" >> $GITHUB_PATH
+        
+    - name: Verify repo tool
+      run: |
+        # 验证repo工具是否可用
+        which repo
+        repo --version
         
     - name: Initialize and sync repo
       run: |
