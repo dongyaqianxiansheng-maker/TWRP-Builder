@@ -156,38 +156,38 @@ jobs:
         
         # 创建本地manifest文件
         cat > .repo/local_manifests/local.xml << 'EOF'
-        <?xml version="1.0" encoding="UTF-8"?>
-        <manifest>
-          <!-- 添加设备树 -->
-          <project path="${{ github.event.inputs.DEVICE_PATH }}" 
-                   name="device-tree" 
-                   remote="device-tree" 
-                   revision="${{ github.event.inputs.DEVICE_TREE_BRANCH }}" />
+<?xml version="1.0" encoding="UTF-8"?>
+<manifest>
+  <!-- 添加设备树 -->
+  <project path="${{ github.event.inputs.DEVICE_PATH }}" 
+           name="device-tree-local" 
+           remote="local" 
+           revision="${{ github.event.inputs.DEVICE_TREE_BRANCH }}" />
 EOF
 
         # 如果有通用设备树，添加到manifest
         if [ -n "${{ github.event.inputs.COMMON_TREE_URL }}" ] && [ -n "${{ github.event.inputs.COMMON_PATH }}" ]; then
           cat >> .repo/local_manifests/local.xml << 'EOF'
-          <!-- 添加通用设备树 -->
-          <project path="${{ github.event.inputs.COMMON_PATH }}" 
-                   name="common-tree" 
-                   remote="common-tree" 
-                   revision="${{ github.event.inputs.DEVICE_TREE_BRANCH }}" />
+  <!-- 添加通用设备树 -->
+  <project path="${{ github.event.inputs.COMMON_PATH }}" 
+           name="common-tree-local" 
+           remote="local" 
+           revision="${{ github.event.inputs.DEVICE_TREE_BRANCH }}" />
 EOF
         fi
 
         # 添加移除不需要项目的部分
         cat >> .repo/local_manifests/local.xml << 'EOF'
-          
-          <!-- 移除不需要的大项目以节省空间 -->
-          <remove-project name="platform/prebuilts/clang" />
-          <remove-project name="platform/prebuilts/gcc" />
-          <remove-project name="platform/prebuilts/ndk" />
-          <remove-project name="platform/external/chromium-webview" />
-          <remove-project name="platform/external/chromium" />
-          <remove-project name="platform/packages/apps" />
-          <remove-project name="platform/frameworks/base" />
-        </manifest>
+  
+  <!-- 移除不需要的大项目以节省空间 -->
+  <remove-project name="platform/prebuilts/clang" />
+  <remove-project name="platform/prebuilts/gcc" />
+  <remove-project name="platform/prebuilts/ndk" />
+  <remove-project name="platform/external/chromium-webview" />
+  <remove-project name="platform/external/chromium" />
+  <remove-project name="platform/packages/apps" />
+  <remove-project name="platform/frameworks/base" />
+</manifest>
 EOF
         
         echo "本地manifest内容:"
@@ -195,24 +195,23 @@ EOF
         
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}/twrp-build
       
-    - name: Add remotes to manifest
+    - name: Update manifest with correct names
       run: |
-        echo "=== 添加远程仓库到manifest ==="
+        echo "=== 更新manifest中的仓库名称 ==="
         
-        # 读取现有的manifest
         MANIFEST_FILE=".repo/local_manifests/local.xml"
         
-        # 使用sed替换远程仓库URL
         if [ -f "$MANIFEST_FILE" ]; then
-          # 备份原始文件
-          cp "$MANIFEST_FILE" "${MANIFEST_FILE}.bak"
+          # 提取设备树仓库名称
+          DEVICE_REPO_NAME=$(basename "${{ github.event.inputs.DEVICE_TREE_URL }}" .git)
           
-          # 替换设备树远程URL
-          sed -i "s|<project path=\"${{ github.event.inputs.DEVICE_PATH }}\".*|<project path=\"${{ github.event.inputs.DEVICE_PATH }}\" name=\"$(basename ${{ github.event.inputs.DEVICE_TREE_URL }} .git)\" remote=\"device-tree\" revision=\"${{ github.event.inputs.DEVICE_TREE_BRANCH }}\" />|" "$MANIFEST_FILE"
+          # 更新设备树项目名称
+          sed -i "s|name=\"device-tree-local\"|name=\"$DEVICE_REPO_NAME\"|g" "$MANIFEST_FILE"
           
-          # 如果有通用设备树，替换其远程URL
+          # 如果有通用设备树，更新其名称
           if [ -n "${{ github.event.inputs.COMMON_TREE_URL }}" ] && [ -n "${{ github.event.inputs.COMMON_PATH }}" ]; then
-            sed -i "s|<project path=\"${{ github.event.inputs.COMMON_PATH }}\".*|<project path=\"${{ github.event.inputs.COMMON_PATH }}\" name=\"$(basename ${{ github.event.inputs.COMMON_TREE_URL }} .git)\" remote=\"common-tree\" revision=\"${{ github.event.inputs.DEVICE_TREE_BRANCH }}\" />|" "$MANIFEST_FILE"
+            COMMON_REPO_NAME=$(basename "${{ github.event.inputs.COMMON_TREE_URL }}" .git)
+            sed -i "s|name=\"common-tree-local\"|name=\"$COMMON_REPO_NAME\"|g" "$MANIFEST_FILE"
           fi
           
           echo "更新后的manifest内容:"
