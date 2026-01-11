@@ -1,157 +1,3 @@
-name: TWRP Builder
-
-on:
-  workflow_dispatch:
-    inputs:
-      MANIFEST_BRANCH:
-        description: 'TWRP manifest branch'
-        required: true
-        default: 'android-12.1'
-        type: choice
-        options:
-          - 'android-9.0'
-          - 'android-10.0'
-          - 'android-11.0'
-          - 'android-12.1'
-          - 'android-13.0'
-          - 'android-14.0'
-      DEVICE_NAME:
-        description: 'Device codename (e.g., dove_evb4)'
-        required: true
-        default: 'dove_evb4'
-        type: string
-      DEVICE_TREE_SOURCE:
-        description: 'Device tree source (e.g., TeamWin/android_device_samsung_dove_evb4)'
-        required: true
-        default: 'TeamWin/android_device_samsung_dove_evb4'
-        type: string
-      DEVICE_TREE_URL:
-        description: 'Device tree git URL (optional)'
-        required: false
-        default: ''
-        type: string
-      DEVICE_TREE_BRANCH:
-        description: 'Device tree branch'
-        required: true
-        default: 'android-12.1'
-        type: string
-      DEVICE_PATH:
-        description: 'Device tree path (e.g., device/samsung/dove_evb4)'
-        required: false
-        default: 'device/samsung/dove_evb4'
-        type: string
-      MAKEFILE_NAME:
-        description: 'Makefile name (e.g., twrp_dove_evb4)'
-        required: false
-        default: 'twrp_dove_evb4'
-        type: string
-      BUILD_TARGET:
-        description: 'Build target'
-        required: true
-        default: 'recovery'
-        type: choice
-        options:
-          - 'recovery'
-          - 'boot'
-      CREATE_RELEASE:
-        description: '是否自动创建Release'
-        required: true
-        default: 'true'
-        type: choice
-        options:
-          - 'true'
-          - 'false'
-
-env:
-  REPO_URL: https://github.com/TeamWin/android_bootable_recovery
-  REPO_BRANCH: ${{ github.event.inputs.MANIFEST_BRANCH }}
-  DEVICE_NAME: ${{ github.event.inputs.DEVICE_NAME }}
-
-jobs:
-  build:
-    runs-on: ubuntu-22.04
-    timeout-minutes: 180
-
-    steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-
-    - name: Setup environment
-      run: |
-        echo "=== 设置环境 ==="
-        sudo apt-get update
-        sudo apt-get install -y git-core gnupg flex bison build-essential zip curl zlib1g-dev gcc-multilib g++-multilib libc6-dev-i386 lib32ncurses5-dev x11proto-core-dev libx11-dev lib32z1-dev libgl1-mesa-dev libxml2-utils xsltproc unzip fontconfig python3 python-is-python3
-        sudo apt-get install -y repo bc imagemagick ccache schedtool libssl-dev
-        echo "环境设置完成"
-
-    - name: Setup Java
-      uses: actions/setup-java@v4
-      with:
-        distribution: 'zulu'
-        java-version: '11'
-
-    - name: Initialize workspace
-      run: |
-        echo "=== 初始化工作空间 ==="
-        mkdir -p workspace
-        cd workspace
-        
-        # 初始化repo
-        echo "初始化repo..."
-        repo init -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git -b ${{ github.event.inputs.MANIFEST_BRANCH }} --depth=1
-        
-        # 同步代码
-        echo "同步代码..."
-        repo sync -c -j$(nproc --all) --force-sync --no-clone-bundle --no-tags
-        
-        echo "代码同步完成"
-
-    - name: Clone device tree
-      run: |
-        echo "=== 克隆设备树 ==="
-        cd workspace
-        
-        # 确定设备树路径
-        if [ -n "${{ github.event.inputs.DEVICE_PATH }}" ]; then
-          DEVICE_PATH="${{ github.event.inputs.DEVICE_PATH }}"
-        else
-          # 从设备名推断路径
-          if [[ "${{ github.event.inputs.DEVICE_NAME }}" =~ ^([^_]+)_([^_]+) ]]; then
-            MANUFACTURER="${BASH_REMATCH[1]}"
-            DEVICE="${BASH_REMATCH[2]}"
-            DEVICE_PATH="device/$MANUFACTURER/$DEVICE"
-          else
-            DEVICE_PATH="device/unknown/${{ github.event.inputs.DEVICE_NAME }}"
-          fi
-        fi
-        
-        echo "设备树路径: $DEVICE_PATH"
-        
-        # 创建目录
-        mkdir -p $(dirname $DEVICE_PATH)
-        
-        # 克隆设备树
-        if [ -n "${{ github.event.inputs.DEVICE_TREE_URL }}" ]; then
-          echo "从指定URL克隆设备树: ${{ github.event.inputs.DEVICE_TREE_URL }}"
-          git clone --depth=1 --branch=${{ github.event.inputs.DEVICE_TREE_BRANCH }} \
-            "${{ github.event.inputs.DEVICE_TREE_URL }}" "$DEVICE_PATH"
-        else
-          # 从TeamWin GitHub克隆
-          echo "从TeamWin GitHub克隆设备树: ${{ github.event.inputs.DEVICE_TREE_SOURCE }}"
-          git clone --depth=1 --branch=${{ github.event.inputs.DEVICE_TREE_BRANCH }} \
-            "https://github.com/${{ github.event.inputs.DEVICE_TREE_SOURCE }}" "$DEVICE_PATH"
-        fi
-        
-        # 检查是否克隆成功
-        if [ -d "$DEVICE_PATH" ]; then
-          echo "✅ 设备树克隆成功"
-          echo "设备树内容:"
-          ls -la "$DEVICE_PATH/"
-        else
-          echo "❌ 设备树克隆失败"
-          exit 1
-        fi
-
     - name: Setup device tree properly
       run: |
         echo "=== 设置设备树 ==="
@@ -228,7 +74,7 @@ jobs:
               PRODUCT_NAME="twrp_${{ github.event.inputs.DEVICE_NAME }}"
             fi
             
-            cat > "$VENDORSETUP_FILE" << EOF
+            cat > "$VENDORSETUP_FILE" << 'EOF'
 add_lunch_combo ${PRODUCT_NAME}-eng
 add_lunch_combo ${PRODUCT_NAME}-userdebug
 add_lunch_combo ${PRODUCT_NAME}-user
@@ -242,13 +88,13 @@ EOF
           # 检查并修复AndroidProducts.mk
           if [ ! -f "$DEVICE_PATH/AndroidProducts.mk" ]; then
             echo "⚠️ 未找到 AndroidProducts.mk，创建..."
-            cat > "$DEVICE_PATH/AndroidProducts.mk" << EOF
-PRODUCT_MAKEFILES := \\
-    \$(LOCAL_DIR)/${PRODUCT_NAME}.mk
+            cat > "$DEVICE_PATH/AndroidProducts.mk" << 'EOF'
+PRODUCT_MAKEFILES := \
+    $(LOCAL_DIR)/${PRODUCT_NAME}.mk
 
-COMMON_LUNCH_CHOICES := \\
-    ${PRODUCT_NAME}-eng \\
-    ${PRODUCT_NAME}-userdebug \\
+COMMON_LUNCH_CHOICES := \
+    ${PRODUCT_NAME}-eng \
+    ${PRODUCT_NAME}-userdebug \
     ${PRODUCT_NAME}-user
 EOF
           fi
@@ -264,15 +110,15 @@ EOF
               echo "使用现有文件: $EXISTING_MK"
               cp "$EXISTING_MK" "$DEVICE_MK_FILE"
             else
-              cat > "$DEVICE_MK_FILE" << EOF
-\$(call inherit-product, device/samsung/dove_evb4/device.mk)
+              cat > "$DEVICE_MK_FILE" << 'EOF'
+$(call inherit-product, device/samsung/dove_evb4/device.mk)
 
 # Inherit from those products. Most specific first.
-\$(call inherit-product, \$(SRC_TARGET_DIR)/product/core_64_bit.mk)
-\$(call inherit-product, \$(SRC_TARGET_DIR)/product/full_base_telephony.mk)
+$(call inherit-product, $(SRC_TARGET_DIR)/product/core_64_bit.mk)
+$(call inherit-product, $(SRC_TARGET_DIR)/product/full_base_telephony.mk)
 
 # Inherit some common TWRP stuff.
-\$(call inherit-product, vendor/twrp/config/common.mk)
+$(call inherit-product, vendor/twrp/config/common.mk)
 
 # Device identifier. This must come after all inclusions
 PRODUCT_DEVICE := ${{ github.event.inputs.DEVICE_NAME }}
@@ -291,7 +137,6 @@ EOF
           find device -type d 2>/dev/null | head -20
           exit 1
         fi
-
     - name: Start compilation
       timeout-minutes: 120
       run: |
@@ -437,7 +282,7 @@ EOF
 
     - name: List build artifacts
       run: |
-                echo "=== 列出编译产物 ==="
+        echo "=== 列出编译产物 ==="
         cd workspace
         
         # 首先查找所有可能的输出目录
