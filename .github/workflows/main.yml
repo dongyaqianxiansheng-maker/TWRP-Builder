@@ -481,135 +481,244 @@ jobs:
         fi
 
     - name: Set Swap Space
-      run: |
+    
+     run: |
         echo "=== 设置交换空间 ==="
         SWAP_SIZE=${{ github.event.inputs.SWAP_SIZE }}
-         - name: Switch to Python2
-     
-
-    - name: Building recovery
-      run: |
-        source build/envsetup.sh
-        export ALLOW_MISSING_DEPENDENCIES=true
-        lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng && make clean && make ${{ github.event.inputs.BUILD_TARGET }}image -j$(nproc --all)
-      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
-
-    - name: Upload to Release
-      uses: softprops/action-gh-release@v2
-      with:
-        files: | 
-          workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/${{ github.event.inputs.BUILD_TARGET }}.img
-          workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*.zip
-          workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*vendor*.img
-        name: ${{ github.event.inputs.DEVICE_NAME }}-${{ github.run_id }}
-        tag_name: ${{ github.run_id }}
-        body: |
-          Manifest: ${{ github.event.inputs.MANIFEST_BRANCH }}
-          Device: ${{ github.event.inputs.DEVICE_NAME }}
-          Target: ${{ github.event.inputs.BUILD_TARGET }}.img
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-    - name: Prepare the environment
-      run: |
-        sudo apt update && sudo apt upgrade -y
-        DEBIAN_FRONTEND=noninteractive sudo apt install -yq \
-            linux-modules-extra-$(uname -r) \
-            gperf gcc-multilib gcc-10-multilib g++-multilib g++-10-multilib \
-            libc6-dev x11proto-core-dev libx11-dev tree lib32z-dev libgl1-mesa-dev libxml2-utils \
-            xsltproc bc ccache lib32readline-dev lib32z1-dev liblz4-tool libsdl1.2-dev \
-            libwxgtk3.2-dev libxml2 lzop pngcrush schedtool squashfs-tools \
-            imagemagick libbz2-dev lzma ncftp qemu-user-static libstdc++-10-dev libncurses6 python3 tar
-
-    - name: Install OpenJDK
-      uses: actions/setup-java@v4
-      with:
-        distribution: 'zulu'
-        java-version: '11'
-
-    - name: Setup SSH Keys
-      if: ${{ startsWith(github.event.inputs.MANIFEST_URL, 'git@github.com') || 
-          startsWith(github.event.inputs.DEVICE_TREE_URL, 'git@github.com') ||
-          startsWith(github.event.inputs.COMMON_TREE_URL, 'git@github.com') }}
-      uses: webfactory/ssh-agent@v0.9.0
-      with:
-          ssh-private-key: |
-            ${{ secrets.SSH_PRIVATE_KEY }}
-
-    - name: Install repo
-      run: |
-        mkdir ~/bin
-        curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
-        chmod a+x ~/bin/repo
-        sudo ln -sf ~/bin/repo /usr/bin/repo
-
-    - name: Initialize repo
-      run: |
-        mkdir workspace
-        cd workspace
-        echo "workspace-folder=$(pwd)" >> $GITHUB_OUTPUT
-        git config --global user.name "azwhikaru"
-        git config --global user.email "azwhikaru+37921907@github.com"
-        repo init --depth=1 -u ${{ github.event.inputs.MANIFEST_URL }} -b ${{ github.event.inputs.MANIFEST_BRANCH }}
-      id: pwd
-
-    - name: Repo Sync
-      run: |
-        repo sync -j$(nproc --all) --force-sync
-      working-directory: workspace
-
-    - name: Clone device tree
-      run: |
-        git clone ${{ github.event.inputs.DEVICE_TREE_URL }} -b ${{ github.event.inputs.DEVICE_TREE_BRANCH }} ./${{ github.event.inputs.DEVICE_PATH }}
-      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
-
-    - name: Clone common tree
-      if: |
-        github.event.inputs.COMMON_TREE_URL != null
-        && github.event.inputs.COMMON_PATH != null
-      run: |
-        git clone ${{ github.event.inputs.COMMON_TREE_URL }} -b ${{ github.event.inputs.DEVICE_TREE_BRANCH }} ./${{ github.event.inputs.COMMON_PATH }}
-      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
-
-    - name: Sync Device Dependencies
-      run: |
-        bash ${GITHUB_WORKSPACE}/scripts/convert.sh ${{ github.event.inputs.DEVICE_PATH }}/${{ steps.buildtree.outputs.value }}.dependencies
-        repo sync -j$(nproc --all)
-      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
-      continue-on-error: true
-
-    - name: Set Swap Space
-      uses: pierotofy/set-swap-space@master
-      with:
-        swap-size-gb: 12
-
-    - name: Switch to Python2
-      run: |
-        sudo apt -y install python
-        sudo rm -rf /usr/bin/python
-        sudo ln -s /usr/bin/python2 /usr/bin/python
-        # sudo ln -s /usr/bin/python3 /usr/bin/python3
-      continue-on-error: true
-
-    - name: Building recovery
-      run: |
-        source build/envsetup.sh
-        export ALLOW_MISSING_DEPENDENCIES=true
-        lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng && make clean && make ${{ github.event.inputs.BUILD_TARGET }}image -j$(nproc --all)
-      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
-
-    - name: Upload to Release
-      uses: softprops/action-gh-release@v2
-      with:
-        files: | 
-          workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/${{ github.event.inputs.BUILD_TARGET }}.img
-          workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*.zip
-          workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*vendor*.img
-        name: ${{ github.event.inputs.DEVICE_NAME }}-${{ github.run_id }}
-        tag_name: ${{ github.run_id }}
-        body: |
-          Manifest: ${{ github.event.inputs.MANIFEST_BRANCH }}
-          Device: ${{ github.event.inputs.DEVICE_NAME }}
-          Target: ${{ github.event.inputs.BUILD_TARGET }}.img
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         
+        # 检查是否已经有交换空间
+        if [ -f /swapfile ]; then
+          echo "交换空间已存在，跳过创建"
+        else
+          echo "创建 ${SWAP_SIZE}GB 交换空间..."
+          sudo fallocate -l ${SWAP_SIZE}G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          
+          # 验证交换空间
+          echo "交换空间状态:"
+          free -h
+          swapon --show
+        fi
+
+    - name: Setup ccache
+      run: |
+        echo "=== 配置ccache ==="
+        export USE_CCACHE=1
+        export CCACHE_EXEC=/usr/bin/ccache
+        export CCACHE_DIR=/tmp/ccache
+        
+        # 创建ccache目录
+        mkdir -p $CCACHE_DIR
+        
+        # 设置ccache大小
+        ccache -M 50G
+        
+        echo "ccache配置完成"
+        ccache -s
+
+    - name: Prepare build configuration
+      run: |
+        echo "=== 准备编译配置 ==="
+        cd workspace
+        
+        # 确定设备名称
+        if [ -n "${{ github.event.inputs.DEVICE_NAME }}" ]; then
+          DEVICE_NAME="${{ github.event.inputs.DEVICE_NAME }}"
+        else
+          # 从设备路径提取设备名
+          if [ -n "${{ github.event.inputs.DEVICE_PATH }}" ]; then
+            DEVICE_PATH="${{ github.event.inputs.DEVICE_PATH }}"
+            DEVICE_NAME=$(basename "$DEVICE_PATH")
+          else
+            echo "错误：无法确定设备名称"
+            exit 1
+          fi
+        fi
+        
+        # 确定Makefile名称
+        if [ -n "${{ github.event.inputs.MAKEFILE_NAME }}" ]; then
+          MAKEFILE_NAME="${{ github.event.inputs.MAKEFILE_NAME }}"
+        else
+          # 自动生成Makefile名称
+          if [[ "$DEVICE_NAME" =~ ^[a-zA-Z0-9_]+$ ]]; then
+            MAKEFILE_NAME="omni_${DEVICE_NAME}"
+          else
+            echo "错误：无法自动生成Makefile名称，请手动指定"
+            exit 1
+          fi
+        fi
+        
+        echo "设备名称: $DEVICE_NAME"
+        echo "Makefile名称: $MAKEFILE_NAME"
+        echo "构建目标: ${{ github.event.inputs.BUILD_TARGET }}"
+        
+        # 保存到环境变量
+        echo "DEVICE_NAME=$DEVICE_NAME" >> $GITHUB_ENV
+        echo "MAKEFILE_NAME=$MAKEFILE_NAME" >> $GITHUB_ENV
+
+    - name: Start compilation
+      timeout-minutes: 120
+      run: |
+        echo "=== 开始编译 ==="
+        cd workspace
+        
+        # 回到源码根目录
+        echo "当前目录: $(pwd)"
+        
+        # 加载编译环境变量
+        echo "加载编译环境..."
+        source build/envsetup.sh
+        
+        # 使用lunch命令指定设备
+        echo "选择设备: ${{ env.MAKEFILE_NAME }}-eng"
+        lunch ${{ env.MAKEFILE_NAME }}-eng
+        
+        # 设置编译环境
+        export ALLOW_MISSING_DEPENDENCIES=true
+        export LC_ALL=C
+        
+        # 根据构建目标选择编译命令
+        BUILD_TARGET="${{ github.event.inputs.BUILD_TARGET }}"
+        echo "构建目标: $BUILD_TARGET"
+        
+        if [ "$BUILD_TARGET" = "recovery" ]; then
+          echo "编译recovery镜像..."
+          mka recoveryimage
+        elif [ "$BUILD_TARGET" = "boot" ]; then
+          echo "编译boot镜像..."
+          mka bootimage
+        else
+          echo "错误：未知的构建目标: $BUILD_TARGET"
+          exit 1
+        fi
+        
+        # 检查编译结果
+        if [ $? -eq 0 ]; then
+          echo "✅ 编译成功"
+        else
+          echo "❌ 编译失败"
+          exit 1
+        fi
+
+    - name: List build artifacts
+      run: |
+        echo "=== 列出编译产物 ==="
+        cd workspace
+        
+        OUTPUT_DIR="out/target/product/${{ env.DEVICE_NAME }}"
+        
+        if [ -d "$OUTPUT_DIR" ]; then
+          echo "输出目录: $OUTPUT_DIR"
+          echo "文件列表:"
+          ls -la "$OUTPUT_DIR/"
+          
+          # 查找特定文件
+          echo "查找镜像文件:"
+          find "$OUTPUT_DIR" -name "*.img" -o -name "*.zip" | sort
+          
+          # 检查主要输出文件
+          BUILD_TARGET="${{ github.event.inputs.BUILD_TARGET }}"
+          TARGET_FILE="$OUTPUT_DIR/$BUILD_TARGET.img"
+          
+          if [ -f "$TARGET_FILE" ]; then
+            echo "✅ 找到目标文件: $TARGET_FILE"
+            echo "文件大小: $(du -h "$TARGET_FILE" | cut -f1)"
+          else
+            echo "⚠️ 未找到目标文件: $TARGET_FILE"
+            echo "尝试查找其他文件..."
+            find "$OUTPUT_DIR" -name "*.img" -exec du -h {} \;
+          fi
+        else
+          echo "❌ 输出目录不存在: $OUTPUT_DIR"
+          exit 1
+        fi
+
+    - name: Create Release
+      if: ${{ github.event.inputs.CREATE_RELEASE == 'true' }}
+      uses: softprops/action-gh-release@v2
+      with:
+        files: |
+          workspace/out/target/product/${{ env.DEVICE_NAME }}/${{ github.event.inputs.BUILD_TARGET }}.img
+          workspace/out/target/product/${{ env.DEVICE_NAME }}/*.zip
+          workspace/out/target/product/${{ env.DEVICE_NAME }}/*vendor*.img
+        name: ${{ env.DEVICE_NAME }}-${{ github.run_id }}
+        tag_name: ${{ github.run_id }}
+        body: |
+          # TWRP Build Results
+          
+          ## Build Information
+          - **Manifest**: ${{ github.event.inputs.MANIFEST_BRANCH }}
+          - **Device**: ${{ env.DEVICE_NAME }}
+          - **Target**: ${{ github.event.inputs.BUILD_TARGET }}.img
+          - **Build ID**: ${{ github.run_id }}
+          - **Build Date**: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          
+          ## Device Tree Source
+          - **Source**: ${{ github.event.inputs.DEVICE_TREE_SOURCE }}
+          ${{ github.event.inputs.DEVICE_TREE_URL && format('**Device Tree URL**: {0}', github.event.inputs.DEVICE_TREE_URL) || '' }}
+          
+          ## Notes
+          - This is an automated build from GitHub Actions
+          - Flash at your own risk
+          - Always backup your data before flashing
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Upload artifacts
+      if: ${{ github.event.inputs.CREATE_RELEASE != 'true' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: twrp-${{ env.DEVICE_NAME }}-${{ github.run_number }}
+        path: |
+          workspace/out/target/product/${{ env.DEVICE_NAME }}/${{ github.event.inputs.BUILD_TARGET }}.img
+          workspace/out/target/product/${{ env.DEVICE_NAME }}/*.zip
+          workspace/out/target/product/${{ env.DEVICE_NAME }}/*vendor*.img
+        retention-days: 7
+
+    - name: Cleanup
+      if: always()
+      run: |
+        echo "=== 清理工作空间 ==="
+        
+        # 关闭交换空间
+        if [ -f /swapfile ]; then
+          echo "关闭交换空间..."
+          sudo swapoff /swapfile || true
+          sudo rm -f /swapfile || true
+        fi
+        
+        # 显示ccache统计
+        echo "ccache统计:"
+        ccache -s || true
+        
+        # 显示磁盘使用情况
+        echo "磁盘使用情况:"
+        df -h
+        
+        echo "清理完成"
+
+    - name: Build Summary
+      if: always()
+      run: |
+        echo "=== 构建总结 ==="
+        echo "设备: ${{ env.DEVICE_NAME }}"
+        echo "Makefile: ${{ env.MAKEFILE_NAME }}"
+        echo "构建目标: ${{ github.event.inputs.BUILD_TARGET }}"
+        echo "构建ID: ${{ github.run_id }}"
+        echo "状态: ${{ job.status }}"
+        
+        if [ "${{ job.status }}" = "success" ]; then
+          echo "✅ 构建成功完成"
+          if [ "${{ github.event.inputs.CREATE_RELEASE }}" = "true" ]; then
+            echo "📦 Release已创建"
+          else
+            echo "📦 产物已上传到Artifacts"
+          fi
+        else
+          echo "❌ 构建失败"
+          echo "请检查日志以获取详细信息"
+        fi
