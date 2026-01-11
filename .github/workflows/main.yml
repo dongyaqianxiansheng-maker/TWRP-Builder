@@ -720,3 +720,255 @@ jobs:
           echo "❌ 构建失败"
           echo "请检查日志以获取详细信息"
         fi
+    - name: Check build output
+      run: |
+        echo "=== 检查编译输出 ==="
+        cd workspace
+        
+        echo "查找所有输出文件:"
+        find out -name "*.img" -o -name "*.zip" -o -name "*.bin" 2>/dev/null | head -20
+        
+        echo "out目录结构:"
+        find out -type d 2>/dev/null | head -30
+        
+        # 检查编译是否真的成功
+        if [ -d "out" ]; then
+          echo "✅ out目录存在"
+          IMG_COUNT=$(find out -name "*.img" 2>/dev/null | wc -l)
+          echo "找到 $IMG_COUNT 个.img文件"
+          
+          if [ $IMG_COUNT -eq 0 ]; then
+            echo "⚠️ 警告：未找到任何.img文件，编译可能未生成预期输出"
+            echo "检查编译日志..."
+            if [ -f "out/error.log" ]; then
+              tail -50 out/error.log
+            fi
+          fi
+        else
+          echo "❌ out目录不存在，编译可能失败"
+          exit 1
+        fi
+
+    - name: List build artifacts
+      run: |
+        echo "=== 列出编译产物 ==="
+        cd workspace
+        
+        # 首先查找所有可能的输出目录
+        echo "查找所有输出目录:"
+        find out/target/product -type d -name "*dove*" 2>/dev/null || true
+        find out/target/product -type d 2>/dev/null | head -20
+        
+        # 确定设备名称
+        if [ -n "${{ env.DEVICE_NAME }}" ]; then
+          DEVICE_NAME="${{ env.DEVICE_NAME }}"
+        else
+          DEVICE_NAME="dove_evb4"
+        fi
+        
+        # 尝试不同的输出路径
+        OUTPUT_PATHS=(
+          "out/target/product/$DEVICE_NAME"
+          "out/target/product/twrp_$DEVICE_NAME"
+          "out/target/product/omni_$DEVICE_NAME"
+        )
+        
+        OUTPUT_DIR=""
+        for path in "${OUTPUT_PATHS[@]}"; do
+          if [ -d "$path" ]; then
+            OUTPUT_DIR="$path"
+            echo "✅ 找到输出目录: $OUTPUT_DIR"
+            break
+          fi
+        done
+        
+        if [ -z "$OUTPUT_DIR" ]; then
+          echo "⚠️ 未找到标准输出目录，尝试查找第一个存在的目录..."
+          OUTPUT_DIR=$(find out/target/product -type d -name "*" | head -1)
+          if [ -n "$OUTPUT_DIR" ]; then
+            echo "使用目录: $OUTPUT_DIR"
+          else
+            echo "❌ 未找到任何输出目录"
+            echo "out目录结构:"
+            find out -type d 2>/dev/null | head -30
+            exit 1
+          fi
+        fi
+        
+        echo "输出目录: $OUTPUT_DIR"
+        echo "文件列表:"
+        ls -la "$OUTPUT_DIR/"
+        
+        # 查找特定文件
+        echo "查找镜像文件:"
+        find "$OUTPUT_DIR" -name "*.img" -o -name "*.zip" -o -name "*.bin" | sort
+        
+        # 检查主要输出文件
+        BUILD_TARGET="${{ github.event.inputs.BUILD_TARGET }}"
+        
+        # 尝试不同的文件名模式
+        TARGET_FILES=(
+          "$OUTPUT_DIR/$BUILD_TARGET.img"
+          "$OUTPUT_DIR/recovery.img"
+          "$OUTPUT_DIR/boot.img"
+          "$OUTPUT_DIR/twrp_$DEVICE_NAME.img"
+          "$OUTPUT_DIR/omni_$DEVICE_NAME.img"
+        )
+        
+        FOUND_FILE=""
+        for file in "${TARGET_FILES[@]}"; do
+          if [ -f "$file" ]; then
+            FOUND_FILE="$file"
+            echo "✅ 找到目标文件: $FOUND_FILE"
+            echo "文件大小: $(du -h "$FOUND_FILE" | cut -f1)"
+            break
+          fi
+        done
+        
+        if [ -z "$FOUND_FILE" ]; then
+          echo "⚠️ 未找到标准目标文件，列出所有.img文件:"
+          find "$OUTPUT_DIR" -name "*.img" -exec du -h {} \;
+          
+          # 获取第一个.img文件
+          FIRST_IMG=$(find "$OUTPUT_DIR" -name "*.img" | head -1)
+          if [ -n "$FIRST_IMG" ]; then
+            FOUND_FILE="$FIRST_IMG"
+            echo "使用第一个找到的.img文件: $FOUND_FILE"
+          fi
+        fi
+        
+        # 保存找到的文件路径到环境变量
+        if [ -n "$FOUND_FILE" ]; then
+          echo "FOUND_FILE=$FOUND_FILE" >> $GITHUB_ENV
+          echo "OUTPUT_DIR=$OUTPUT_DIR" >> $GITHUB_ENV
+          
+          # 获取所有要上传的文件
+          ALL_FILES=$(find "$OUTPUT_DIR" -name "*.img" -o -name "*.zip" -o -name "*.bin" | tr '\n' ' ')
+          echo "ALL_FILES=$ALL_FILES" >> $GITHUB_ENV
+          
+          echo "所有找到的文件:"
+          echo "$ALL_FILES"
+        fi
+
+    - name: Auto Create Release
+      if: ${{ github.event.inputs.CREATE_RELEASE == 'true' && env.FOUND_FILE != '' }}
+      id: create_release
+      uses: softprops/action-gh-release@v2
+      with:
+        files: |
+          ${{ env.FOUND_FILE }}
+          ${{ env.OUTPUT_DIR }}/*.zip
+          ${{ env.OUTPUT_DIR }}/*vendor*.img
+          ${{ env.OUTPUT_DIR }}/*.bin
+        name: TWRP-${{ env.DEVICE_NAME }}-${{ github.run_number }}
+        tag_name: v${{ github.run_number }}
+        body: |
+          # TWRP Build Results
+          
+          ## Build Information
+          - **Build ID**: ${{ github.run_number }}
+          - **Device**: ${{ env.DEVICE_NAME }}
+          - **Target**: ${{ github.event.inputs.BUILD_TARGET }}
+          - **Manifest**: ${{ github.event.inputs.MANIFEST_BRANCH }}
+          - **Build Date**: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          
+          ## Device Information
+          - **Device Tree Source**: ${{ github.event.inputs.DEVICE_TREE_SOURCE }}
+          ${{ github.event.inputs.DEVICE_TREE_URL && format('- **Device Tree**: {0}', github.event.inputs.DEVICE_TREE_URL) || '' }}
+          ${{ github.event.inputs.DEVICE_PATH && format('- **Device Path**: {0}', github.event.inputs.DEVICE_PATH) || '' }}
+          
+          ## Build Files
+          $(echo "以下文件已包含在此Release中:" && for file in ${{ env.ALL_FILES }}; do echo "- \`$(basename "$file")\`"; done)
+          
+          ## Installation Instructions
+          1. Download the appropriate recovery/boot image for your device
+          2. Reboot to bootloader/fastboot mode
+          3. Flash using: `fastboot flash ${{ github.event.inputs.BUILD_TARGET }} <filename>.img`
+          4. Reboot to recovery: `fastboot reboot recovery`
+          
+          ## Notes
+          - This is an automated build from GitHub Actions
+          - Flash at your own risk
+          - Always backup your data before flashing
+          - Report issues in the repository's Issues section
+        draft: false
+        prerelease: false
+        generate_release_notes: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Auto Upload to Release (Fallback)
+      if: ${{ github.event.inputs.CREATE_RELEASE == 'true' && env.FOUND_FILE == '' }}
+      uses: softprops/action-gh-release@v2
+      with:
+        files: |
+          workspace/out/target/product/*/*.img
+          workspace/out/target/product/*/*.zip
+          workspace/out/target/product/*/*.bin
+        name: TWRP-${{ env.DEVICE_NAME }}-${{ github.run_number }}-fallback
+        tag_name: v${{ github.run_number }}-fallback
+        body: |
+          # TWRP Build Results (Fallback)
+          
+          ## Build Information
+          - **Build ID**: ${{ github.run_number }}
+          - **Device**: ${{ env.DEVICE_NAME }}
+          - **Status**: Fallback mode - files found via wildcard search
+          - **Build Date**: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          
+          ## Notes
+          - This release was created in fallback mode
+          - The build may have generated files in non-standard locations
+          - Please verify the files before flashing
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Upload artifacts to GitHub
+      if: ${{ github.event.inputs.CREATE_RELEASE != 'true' && env.FOUND_FILE != '' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: twrp-${{ env.DEVICE_NAME }}-${{ github.run_number }}
+        path: |
+          ${{ env.FOUND_FILE }}
+          ${{ env.OUTPUT_DIR }}/*.zip
+          ${{ env.OUTPUT_DIR }}/*vendor*.img
+          ${{ env.OUTPUT_DIR }}/*.bin
+        retention-days: 7
+      continue-on-error: true
+
+    - name: Upload artifacts fallback
+      if: ${{ github.event.inputs.CREATE_RELEASE != 'true' && env.FOUND_FILE == '' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: twrp-${{ env.DEVICE_NAME }}-${{ github.run_number }}-fallback
+        path: |
+          workspace/out/target/product/*/*.img
+          workspace/out/target/product/*/*.zip
+          workspace/out/target/product/*/*.bin
+        retention-days: 7
+      continue-on-error: true
+
+    - name: Release Summary
+      if: ${{ github.event.inputs.CREATE_RELEASE == 'true' }}
+      run: |
+        echo "=== Release 创建总结 ==="
+        echo "✅ Release 已成功创建"
+        echo "设备: ${{ env.DEVICE_NAME }}"
+        echo "Release 名称: TWRP-${{ env.DEVICE_NAME }}-${{ github.run_number }}"
+        echo "Tag: v${{ github.run_number }}"
+        
+        if [ -n "${{ env.FOUND_FILE }}" ]; then
+          echo "主要文件: ${{ env.FOUND_FILE }}"
+          echo "文件大小: $(du -h "${{ env.FOUND_FILE }}" 2>/dev/null | cut -f1 || echo '未知')"
+        fi
+        
+        echo "所有文件:"
+        for file in ${{ env.ALL_FILES }}; do
+          echo "- $(basename "$file")"
+        done
+        
+        # 生成Release URL
+        REPO_NAME="${{ github.repository }}"
+        echo "Release URL: https://github.com/$REPO_NAME/releases/tag/v${{ github.run_number }}"
