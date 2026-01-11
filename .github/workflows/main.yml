@@ -1,57 +1,81 @@
-name: Recovery Build Legacy
+name: TWRP Build Optimized
 
 on:
   workflow_dispatch:
     inputs:
       MANIFEST_URL:
-        description: 'MANIFEST_URL (if want to use SSH keys, use git@github.com:XXXXX)'
+        description: 'MANIFEST_URL (使用HTTPS或SSH)'
         required: true
-        default: 'https://github.com/minimal-manifest-twrp/platform_manifest_twrp_omni'
+        default: 'https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp'
       MANIFEST_BRANCH:
         description: 'MANIFEST_BRANCH'
         required: true
-        default: 'twrp-7.1'
+        default: 'twrp-12.1'
       DEVICE_TREE_URL:
         description: 'DEVICE_TREE_URL'
         required: true
-        default: 'https://github.com/ycly2333/android_device_EEBBK_H3000S-twrp'
+        default: ''
       DEVICE_TREE_BRANCH:
         description: 'DEVICE_TREE_BRANCH'
         required: true
-        default: 'twrp-7.1'
+        default: 'main'
       DEVICE_PATH:
-        description: 'DEVICE_PATH'
+        description: 'DEVICE_PATH (如: device/xiaomi/davinci)'
         required: true
-        default: 'device/EEBBK/H3000S'
-      COMMON_TREE_URL:
-        description: 'COMMON_TREE_URL (if no common tree, leave blank)'
-        required: false
-      COMMON_PATH:
-        description: 'COMMON_PATH (if no common tree, leave blank)'
-        required: false
+        default: ''
       DEVICE_NAME:
         description: 'DEVICE_NAME'
         required: true
-        default: 'H3000S'
+        default: ''
       MAKEFILE_NAME:
-        description: 'MAKEFILE_NAME'
+        description: 'MAKEFILE_NAME (如: omni_davinci)'
         required: true
-        default: 'omni_H3000S'
+        default: ''
       BUILD_TARGET:
         description: 'BUILD_TARGET'
         required: true
         default: 'recovery'
+        type: choice
+        options:
+          - recovery
+          - boot
+      SYNC_METHOD:
+        description: '同步方式'
+        required: true
+        default: 'shallow'
+        type: choice
+        options:
+          - shallow
+          - minimal
+          - full
+      CLEAN_BUILD:
+        description: '是否清理构建'
+        required: true
+        default: 'false'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+      CREATE_RELEASE:
+        description: '是否创建Release'
+        required: true
+        default: 'false'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
 
 jobs:
   build:
-    if: github.event.repository.owner.id == github.event.sender.id
     runs-on: ubuntu-24.04
+    timeout-minutes: 180
     permissions:
       contents: write
+      
     steps:
     - name: Display Run Parameters
       run: |
-        echo "::group::User Environment Variables"
+        echo "::group::构建参数"
         echo "Manifest URL: ${{ github.event.inputs.MANIFEST_URL }}"
         echo "Manifest Branch: ${{ github.event.inputs.MANIFEST_BRANCH }}"
         echo "Device Tree URL: ${{ github.event.inputs.DEVICE_TREE_URL }}"
@@ -59,118 +83,383 @@ jobs:
         echo "Device Path: ${{ github.event.inputs.DEVICE_PATH }}"
         echo "Device Name: ${{ github.event.inputs.DEVICE_NAME }}"
         echo "Makefile Name: ${{ github.event.inputs.MAKEFILE_NAME }}"
-        echo "Build Target: ${{ github.event.inputs.BUILD_TARGET }}.img"
+        echo "Build Target: ${{ github.event.inputs.BUILD_TARGET }}"
+        echo "Sync Method: ${{ github.event.inputs.SYNC_METHOD }}"
+        echo "Clean Build: ${{ github.event.inputs.CLEAN_BUILD }}"
+        echo "Create Release: ${{ github.event.inputs.CREATE_RELEASE }}"
         echo "::endgroup::"
+        
+        # 验证必要参数
+        if [ -z "${{ github.event.inputs.DEVICE_TREE_URL }}" ]; then
+          echo "❌ 错误：DEVICE_TREE_URL 不能为空"
+          exit 1
+        fi
+        if [ -z "${{ github.event.inputs.DEVICE_PATH }}" ]; then
+          echo "❌ 错误：DEVICE_PATH 不能为空"
+          exit 1
+        fi
+        if [ -z "${{ github.event.inputs.DEVICE_NAME }}" ]; then
+          echo "❌ 错误：DEVICE_NAME 不能为空"
+          exit 1
+        fi
 
-    # You might want to Checkout your repo first, but not mandatory
     - name: Check Out
       uses: actions/checkout@v4
 
-    # Cleanup The Actions Workspace Using Custom Composite Run Actions
-    - name: Cleanup
-      uses: rokibhasansagar/slimhub_actions@main
-      # That's it! Now use your normal steps
+    - name: Check disk space
+      run: |
+        echo "=== 初始磁盘空间 ==="
+        df -h
+        echo "可用空间:"
+        df -h /home/runner | tail -1
 
     - name: Prepare the environment
       run: |
-        sudo apt update && sudo apt upgrade -y
+        echo "=== 安装依赖包 ==="
+        sudo apt update
+        
+        # 安装最小化依赖包
         DEBIAN_FRONTEND=noninteractive sudo apt install -yq \
-            linux-modules-extra-$(uname -r) \
-            gperf gcc-multilib gcc-10-multilib g++-multilib g++-10-multilib \
-            libc6-dev x11proto-core-dev libx11-dev tree lib32z-dev libgl1-mesa-dev libxml2-utils \
-            xsltproc bc ccache lib32readline-dev lib32z1-dev liblz4-tool libsdl1.2-dev \
-            libwxgtk3.2-dev libxml2 lzop pngcrush schedtool squashfs-tools \
-            imagemagick libbz2-dev lzma ncftp qemu-user-static libstdc++-10-dev libncurses6 python3 tar
-
-    - name: Install OpenJDK
-      uses: actions/setup-java@v4
-      with:
-        distribution: 'zulu'
-        java-version: '11'
+          git-core python2 python3 python3-pip \
+          openjdk-8-jdk openjdk-11-jdk \
+          bc bison build-essential ccache curl flex \
+          g++-multilib gcc-multilib gperf \
+          lib32ncurses5-dev lib32readline-dev lib32z1-dev \
+          liblz4-tool libncurses5-dev libsdl1.2-dev libssl-dev \
+          libwxgtk3.2-dev libxml2 libxml2-utils lzop \
+          pngcrush rsync schedtool squashfs-tools \
+          xsltproc zip zlib1g-dev imagemagick \
+          tree file
+        
+        # 设置Python2为默认
+        sudo update-alternatives --install /usr/bin/python python /usr/bin/python2 1
+        sudo update-alternatives --install /usr/bin/python python /usr/bin/python3 2
+        sudo update-alternatives --set python /usr/bin/python2
+        
+        echo "Python版本:"
+        python --version
+        
+        # 配置Git
+        git config --global user.name "GitHub Actions"
+        git config --global user.email "github-actions@github.com"
+        git config --global core.compression 0
+        git config --global http.postBuffer 1048576000
 
     - name: Setup SSH Keys
       if: ${{ startsWith(github.event.inputs.MANIFEST_URL, 'git@github.com') || 
-          startsWith(github.event.inputs.DEVICE_TREE_URL, 'git@github.com') ||
-          startsWith(github.event.inputs.COMMON_TREE_URL, 'git@github.com') }}
+          startsWith(github.event.inputs.DEVICE_TREE_URL, 'git@github.com') }}
       uses: webfactory/ssh-agent@v0.9.0
       with:
-          ssh-private-key: |
-            ${{ secrets.SSH_PRIVATE_KEY }}
+        ssh-private-key: |
+          ${{ secrets.SSH_PRIVATE_KEY }}
 
-    - name: Install repo
+    - name: Install repo tool
       run: |
-        mkdir ~/bin
-        curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
-        chmod a+x ~/bin/repo
-        sudo ln -sf ~/bin/repo /usr/bin/repo
+        echo "=== 安装repo工具 ==="
+        sudo curl -o /usr/local/bin/repo https://storage.googleapis.com/git-repo-downloads/repo
+        sudo chmod a+x /usr/local/bin/repo
+        repo --version
 
-    - name: Initialize repo
+    - name: Clean workspace
       run: |
-        mkdir workspace
+        echo "=== 清理工作空间 ==="
+        # 清理各种缓存
+        sudo apt clean
+        sudo rm -rf /var/lib/apt/lists/*
+        sudo rm -rf /tmp/*
+        pip3 cache purge
+        
+        # 显示清理后空间
+        df -h
+
+    - name: Initialize repo with optimization
+      id: init_repo
+      run: |
+        echo "=== 初始化仓库 ==="
+        
+        # 创建工作目录
+        mkdir -p workspace
         cd workspace
         echo "workspace-folder=$(pwd)" >> $GITHUB_OUTPUT
-        git config --global user.name "azwhikaru"
-        git config --global user.email "azwhikaru+37921907@github.com"
-        repo init --depth=1 -u ${{ github.event.inputs.MANIFEST_URL }} -b ${{ github.event.inputs.MANIFEST_BRANCH }}
-      id: pwd
+        
+        # 根据同步方式选择参数
+        SYNC_FLAGS=""
+        case "${{ github.event.inputs.SYNC_METHOD }}" in
+          "shallow")
+            SYNC_FLAGS="--depth=1"
+            ;;
+          "minimal")
+            SYNC_FLAGS="--depth=1 --partial-clone --clone-filter=blob:limit=10M"
+            ;;
+        esac
+        
+        echo "使用同步方式: ${{ github.event.inputs.SYNC_METHOD }}"
+        echo "同步参数: $SYNC_FLAGS"
+        
+        # 初始化仓库
+        repo init $SYNC_FLAGS \
+          -u ${{ github.event.inputs.MANIFEST_URL }} \
+          -b ${{ github.event.inputs.MANIFEST_BRANCH }}
+        
+        echo "✅ 仓库初始化完成"
 
-    - name: Repo Sync
+    - name: Repo Sync with retry
+      id: sync_repo
+      timeout-minutes: 45
       run: |
-        repo sync -j$(nproc --all) --force-sync
-      working-directory: workspace
+        echo "=== 同步仓库代码 ==="
+        cd workspace
+        
+        # 设置同步参数
+        SYNC_JOBS=$(nproc --all)
+        SYNC_FLAGS="-j$SYNC_JOBS --no-tags --no-clone-bundle --optimized-fetch"
+        
+        if [ "${{ github.event.inputs.SYNC_METHOD }}" = "minimal" ]; then
+          SYNC_FLAGS="$SYNC_FLAGS -c"
+        fi
+        
+        echo "同步参数: $SYNC_FLAGS"
+        echo "开始时间: $(date)"
+        
+        # 重试机制
+        for i in {1..3}; do
+          echo "第 $i 次尝试同步..."
+          
+          timeout 1200 repo sync $SYNC_FLAGS
+          SYNC_EXIT_CODE=$?
+          
+          if [ $SYNC_EXIT_CODE -eq 0 ]; then
+            echo "✅ 同步成功"
+            break
+          elif [ $SYNC_EXIT_CODE -eq 124 ]; then
+            echo "⚠️ 同步超时，清理后重试..."
+            # 清理临时文件
+            find .repo/project-objects -name "*.tmp" -delete 2>/dev/null || true
+            sleep 10
+          else
+            echo "❌ 同步失败，退出码: $SYNC_EXIT_CODE"
+            if [ $i -lt 3 ]; then
+              echo "等待20秒后重试..."
+              sleep 20
+            fi
+          fi
+        done
+        
+        if [ $SYNC_EXIT_CODE -ne 0 ]; then
+          echo "❌ 同步失败，请检查网络或仓库配置"
+          exit 1
+        fi
+        
+        echo "结束时间: $(date)"
+        echo "同步完成，目录大小:"
+        du -sh .
+        
+        # 检查关键目录
+        if [ ! -d "bootable/recovery" ]; then
+          echo "⚠️ 警告：缺少bootable/recovery目录"
+        fi
 
     - name: Clone device tree
       run: |
-        git clone ${{ github.event.inputs.DEVICE_TREE_URL }} -b ${{ github.event.inputs.DEVICE_TREE_BRANCH }} ./${{ github.event.inputs.DEVICE_PATH }}
-      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+        echo "=== 克隆设备树 ==="
+        cd workspace
+        
+        # 提取设备树目录路径
+        DEVICE_DIR=$(dirname "${{ github.event.inputs.DEVICE_PATH }}")
+        DEVICE_NAME=$(basename "${{ github.event.inputs.DEVICE_PATH }}")
+        
+        echo "设备树目录: $DEVICE_DIR"
+        echo "设备名称: $DEVICE_NAME"
+        
+        # 创建设备目录
+        mkdir -p "$DEVICE_DIR"
+        
+        # 克隆设备树
+        echo "克隆设备树仓库..."
+        git clone \
+          --depth=1 \
+          --single-branch \
+          -b ${{ github.event.inputs.DEVICE_TREE_BRANCH }} \
+          "${{ github.event.inputs.DEVICE_TREE_URL }}" \
+          "${{ github.event.inputs.DEVICE_PATH }}"
+        
+        if [ $? -eq 0 ]; then
+          echo "✅ 设备树克隆成功"
+        else
+          echo "❌ 设备树克隆失败"
+          exit 1
+        fi
+        
+        # 验证设备树
+        if [ -f "${{ github.event.inputs.DEVICE_PATH }}/AndroidProducts.mk" ] || \
+           [ -f "${{ github.event.inputs.DEVICE_PATH }}/device.mk" ] || \
+           [ -f "${{ github.event.inputs.DEVICE_PATH }}/BoardConfig.mk" ]; then
+          echo "✅ 设备树文件结构正常"
+        else
+          echo "⚠️ 警告：设备树可能缺少必要的配置文件"
+          echo "设备树内容:"
+          ls -la "${{ github.event.inputs.DEVICE_PATH }}/"
+        fi
 
-    - name: Clone common tree
-      if: |
-        github.event.inputs.COMMON_TREE_URL != null
-        && github.event.inputs.COMMON_PATH != null
+    - name: Clean space before build
       run: |
-        git clone ${{ github.event.inputs.COMMON_TREE_URL }} -b ${{ github.event.inputs.DEVICE_TREE_BRANCH }} ./${{ github.event.inputs.COMMON_PATH }}
-      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+        echo "=== 编译前清理空间 ==="
+        
+        # 清理各种缓存
+        sudo apt clean
+        sudo rm -rf /var/lib/apt/lists/*
+        sudo rm -rf /tmp/*
+        pip3 cache purge
+        
+        # 清理repo缓存
+        cd workspace
+        find .repo/project-objects -name "*.tmp" -delete 2>/dev/null || true
+        
+        # 显示剩余空间
+        echo "编译前磁盘空间:"
+        df -h
 
-    - name: Sync Device Dependencies
-      run: |
-        bash ${GITHUB_WORKSPACE}/scripts/convert.sh ${{ github.event.inputs.DEVICE_PATH }}/${{ steps.buildtree.outputs.value }}.dependencies
-        repo sync -j$(nproc --all)
-      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
-      continue-on-error: true
-
-    - name: Set Swap Space
+    - name: Set up swap space
       uses: pierotofy/set-swap-space@master
       with:
-        swap-size-gb: 12
+        swap-size-gb: 8
 
-    - name: Switch to Python2
+    - name: Setup ccache
       run: |
-        sudo apt -y install python
-        sudo rm -rf /usr/bin/python
-        sudo ln -s /usr/bin/python2 /usr/bin/python
-        # sudo ln -s /usr/bin/python3 /usr/bin/python3
-      continue-on-error: true
+        echo "=== 设置ccache ==="
+        export USE_CCACHE=1
+        export CCACHE_EXEC=/usr/bin/ccache
+        ccache -M 2G
+        ccache -s
 
     - name: Building recovery
+      id: build_recovery
+      timeout-minutes: 90
       run: |
+        echo "=== 开始编译 ==="
+        cd workspace
+        
+        # 加载环境变量
         source build/envsetup.sh
+        
+        # 设置编译参数
         export ALLOW_MISSING_DEPENDENCIES=true
-        lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng && make clean && make ${{ github.event.inputs.BUILD_TARGET }}image -j$(nproc --all)
-      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+        export LC_ALL=C
+        
+        # 清理构建（如果选择）
+        if [ "${{ github.event.inputs.CLEAN_BUILD }}" = "true" ]; then
+          echo "执行清理构建..."
+          make clean
+        fi
+        
+        # 选择设备并编译
+        echo "选择设备: ${{ github.event.inputs.MAKEFILE_NAME }}-eng"
+        lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng
+        
+        # 开始编译
+        echo "编译目标: ${{ github.event.inputs.BUILD_TARGET }}image"
+        echo "开始时间: $(date)"
+        
+        # 根据CPU核心数设置并行编译
+        CPU_CORES=$(nproc --all)
+        BUILD_JOBS=$((CPU_CORES * 2))
+        echo "使用 $BUILD_JOBS 个并行任务编译"
+        
+        make ${{ github.event.inputs.BUILD_TARGET }}image -j$BUILD_JOBS
+        
+        BUILD_EXIT_CODE=$?
+        echo "结束时间: $(date)"
+        
+        if [ $BUILD_EXIT_CODE -eq 0 ]; then
+          echo "✅ 编译成功"
+        else
+          echo "❌ 编译失败，退出码: $BUILD_EXIT_CODE"
+          exit 1
+        fi
 
-    - name: Upload to Release
+    - name: List build artifacts
+      run: |
+        echo "=== 编译产物列表 ==="
+        cd workspace
+        
+        BUILD_OUT_DIR="out/target/product/${{ github.event.inputs.DEVICE_NAME }}"
+        
+        if [ -d "$BUILD_OUT_DIR" ]; then
+          echo "编译产物目录: $BUILD_OUT_DIR"
+          echo "文件列表:"
+          find "$BUILD_OUT_DIR" -type f \( -name "*.img" -o -name "*.zip" \) | sort
+          
+          # 检查主要产物
+          TARGET_IMG="$BUILD_OUT_DIR/${{ github.event.inputs.BUILD_TARGET }}.img"
+          if [ -f "$TARGET_IMG" ]; then
+            echo "✅ ${{ github.event.inputs.BUILD_TARGET }}.img 编译成功"
+            ls -lh "$TARGET_IMG"
+            echo "文件大小: $(du -h "$TARGET_IMG" | cut -f1)"
+          else
+            echo "❌ ${{ github.event.inputs.BUILD_TARGET }}.img 未找到"
+            echo "目录内容:"
+            ls -la "$BUILD_OUT_DIR/"
+          fi
+        else
+          echo "❌ 编译产物目录不存在"
+        fi
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: twrp-${{ github.event.inputs.DEVICE_NAME }}-${{ github.run_id }}
+        path: |
+          workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*.img
+          workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*.zip
+        retention-days: 7
+        if-no-files-found: error
+
+    - name: Create Release
+      if: ${{ github.event.inputs.CREATE_RELEASE == 'true' }}
       uses: softprops/action-gh-release@v2
       with:
-        files: | 
+        files: |
           workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/${{ github.event.inputs.BUILD_TARGET }}.img
           workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*.zip
-          workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*vendor*.img
-        name: ${{ github.event.inputs.DEVICE_NAME }}-${{ github.run_id }}
-        tag_name: ${{ github.run_id }}
+        name: TWRP-${{ github.event.inputs.DEVICE_NAME }}-${{ github.run_number }}
+        tag_name: twrp-${{ github.event.inputs.DEVICE_NAME }}-${{ github.run_number }}
         body: |
-          Manifest: ${{ github.event.inputs.MANIFEST_BRANCH }}
-          Device: ${{ github.event.inputs.DEVICE_NAME }}
-          Target: ${{ github.event.inputs.BUILD_TARGET }}.img
+          # TWRP Build for ${{ github.event.inputs.DEVICE_NAME }}
+          
+          **Build Information:**
+          - Build ID: ${{ github.run_id }}
+          - Run Number: ${{ github.run_number }}
+          - Device: ${{ github.event.inputs.DEVICE_NAME }}
+          - Makefile: ${{ github.event.inputs.MAKEFILE_NAME }}
+          - Build Target: ${{ github.event.inputs.BUILD_TARGET }}.img
+          - Manifest: ${{ github.event.inputs.MANIFEST_BRANCH }}
+          - Sync Method: ${{ github.event.inputs.SYNC_METHOD }}
+          - Clean Build: ${{ github.event.inputs.CLEAN_BUILD }}
+          
+          **Source Information:**
+          - Manifest URL: ${{ github.event.inputs.MANIFEST_URL }}
+          - Device Tree URL: ${{ github.event.inputs.DEVICE_TREE_URL }}
+          - Device Tree Branch: ${{ github.event.inputs.DEVICE_TREE_BRANCH }}
+          
+          **Build Date:** $(date -u)
+          
+          **Installation:**
+          ```bash
+          # 解锁bootloader
+          fastboot oem unlock
+          
+          # 刷入recovery
+          fastboot flash ${{ github.event.inputs.BUILD_TARGET }} ${{ github.event.inputs.BUILD_TARGET }}.img
+          
+          # 重启到recovery
+          fastboot reboot recovery
+          ```
+          
+          **Notes:**
+          - 请确保设备已解锁Bootloader
+          - 刷入前请备份重要数据
+          - 使用 fastboot 刷入
+        draft: false
+        prerelease: false
       env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GITHUB_TOKEN: ${{ secrets.GITHUB
