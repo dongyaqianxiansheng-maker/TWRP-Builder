@@ -143,6 +143,8 @@ jobs:
         cd "${{ github.workspace }}/twrp-build"
         
         mkdir -p .repo/local_manifests
+        
+        # 创建本地 manifest 文件
         cat > .repo/local_manifests/local_manifest.xml << 'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
 <manifest>
