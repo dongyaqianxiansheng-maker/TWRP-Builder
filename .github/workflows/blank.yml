@@ -155,24 +155,29 @@ jobs:
         mkdir -p .repo/local_manifests
         
         # 创建本地manifest文件
-        cat > .repo/local_manifests/local.xml << EOF
+        cat > .repo/local_manifests/local.xml << 'EOF'
         <?xml version="1.0" encoding="UTF-8"?>
         <manifest>
           <!-- 添加设备树 -->
           <project path="${{ github.event.inputs.DEVICE_PATH }}" 
-                   name="$(basename ${{ github.event.inputs.DEVICE_TREE_URL }})" 
+                   name="device-tree" 
                    remote="device-tree" 
                    revision="${{ github.event.inputs.DEVICE_TREE_BRANCH }}" />
-          
-          <!-- 添加通用设备树（如果存在） -->
-          ${{ github.event.inputs.COMMON_TREE_URL != '' && github.event.inputs.COMMON_PATH != '' && format('
-          <project path="{0}" 
-                   name="{1}" 
+EOF
+
+        # 如果有通用设备树，添加到manifest
+        if [ -n "${{ github.event.inputs.COMMON_TREE_URL }}" ] && [ -n "${{ github.event.inputs.COMMON_PATH }}" ]; then
+          cat >> .repo/local_manifests/local.xml << 'EOF'
+          <!-- 添加通用设备树 -->
+          <project path="${{ github.event.inputs.COMMON_PATH }}" 
+                   name="common-tree" 
                    remote="common-tree" 
-                   revision="{2}" />', 
-                   github.event.inputs.COMMON_PATH, 
-                   basename(github.event.inputs.COMMON_TREE_URL), 
-                   github.event.inputs.DEVICE_TREE_BRANCH) || '' }}
+                   revision="${{ github.event.inputs.DEVICE_TREE_BRANCH }}" />
+EOF
+        fi
+
+        # 添加移除不需要项目的部分
+        cat >> .repo/local_manifests/local.xml << 'EOF'
           
           <!-- 移除不需要的大项目以节省空间 -->
           <remove-project name="platform/prebuilts/clang" />
@@ -183,10 +188,36 @@ jobs:
           <remove-project name="platform/packages/apps" />
           <remove-project name="platform/frameworks/base" />
         </manifest>
-        EOF
+EOF
         
         echo "本地manifest内容:"
         cat .repo/local_manifests/local.xml
+        
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}/twrp-build
+      
+    - name: Add remotes to manifest
+      run: |
+        echo "=== 添加远程仓库到manifest ==="
+        
+        # 读取现有的manifest
+        MANIFEST_FILE=".repo/local_manifests/local.xml"
+        
+        # 使用sed替换远程仓库URL
+        if [ -f "$MANIFEST_FILE" ]; then
+          # 备份原始文件
+          cp "$MANIFEST_FILE" "${MANIFEST_FILE}.bak"
+          
+          # 替换设备树远程URL
+          sed -i "s|<project path=\"${{ github.event.inputs.DEVICE_PATH }}\".*|<project path=\"${{ github.event.inputs.DEVICE_PATH }}\" name=\"$(basename ${{ github.event.inputs.DEVICE_TREE_URL }} .git)\" remote=\"device-tree\" revision=\"${{ github.event.inputs.DEVICE_TREE_BRANCH }}\" />|" "$MANIFEST_FILE"
+          
+          # 如果有通用设备树，替换其远程URL
+          if [ -n "${{ github.event.inputs.COMMON_TREE_URL }}" ] && [ -n "${{ github.event.inputs.COMMON_PATH }}" ]; then
+            sed -i "s|<project path=\"${{ github.event.inputs.COMMON_PATH }}\".*|<project path=\"${{ github.event.inputs.COMMON_PATH }}\" name=\"$(basename ${{ github.event.inputs.COMMON_TREE_URL }} .git)\" remote=\"common-tree\" revision=\"${{ github.event.inputs.DEVICE_TREE_BRANCH }}\" />|" "$MANIFEST_FILE"
+          fi
+          
+          echo "更新后的manifest内容:"
+          cat "$MANIFEST_FILE"
+        fi
         
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}/twrp-build
       
@@ -284,6 +315,9 @@ jobs:
           ls -lh "$BUILD_OUT/${{ github.event.inputs.BUILD_TARGET }}.img"
         else
           echo "❌ 编译失败，未找到输出文件"
+          # 尝试查找其他可能的输出文件
+          echo "查找所有可能的输出文件:"
+          find "$BUILD_OUT" -name "*.img" -o -name "*.zip" | head -20
           exit 1
         fi
         
