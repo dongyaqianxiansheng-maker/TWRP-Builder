@@ -3,30 +3,41 @@ name: TWRP Build
 on:
   workflow_dispatch:
     inputs:
-      device_name:
-        description: '设备名称 (如: davinci)'
+      DEVICE_NAME:
+        description: '设备名称（如: davinci）'
         required: true
-        type: string
-      device_manufacturer:
-        description: '设备制造商 (如: xiaomi)'
+        default: ''
+      MANUFACTURER:
+        description: '厂商名称（如: xiaomi）'
         required: true
-        type: string
-      boot_img_url:
-        description: 'boot.img 下载链接'
+        default: ''
+      MANIFEST_BRANCH:
+        description: 'manifest分支'
         required: true
-        type: string
-      manifest_branch:
-        description: 'TWRP manifest 分支'
         default: 'twrp-12.1'
-        type: string
-      build_target:
-        description: '编译目标'
-        default: 'bootimage'
-        type: string
-      repo_depth:
-        description: '仓库深度 (1=浅克隆，0=完整克隆)'
-        default: '1'
-        type: string
+      BUILD_TARGET:
+        description: '构建目标（recoveryimage 或 bootimage）'
+        required: true
+        default: 'recoveryimage'
+        type: choice
+        options:
+          - recoveryimage
+          - bootimage
+      BOOT_IMG_URL:
+        description: 'boot.img下载链接（用于生成设备树）'
+        required: true
+        default: ''
+      SYNC_METHOD:
+        description: '同步方式'
+        required: true
+        default: 'full'
+        type: choice
+        options:
+          - full
+          - shallow
+
+env:
+  WORKSPACE: /home/runner/work/twrp-build/twrp-build
 
 jobs:
   build:
@@ -35,14 +46,7 @@ jobs:
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
-    
-    - name: Check disk space
-      run: |
-        echo "=== 检查磁盘空间 ==="
-        df -h
-        echo "可用空间:"
-        df -h /home/runner | tail -1
-    
+      
     - name: Setup environment
       run: |
         echo "=== 安装依赖包 ==="
@@ -50,192 +54,124 @@ jobs:
         sudo apt-get install -y git-core gnupg flex bison build-essential zip curl \
         zlib1g-dev gcc-multilib g++-multilib libc6-dev-i386 lib32ncurses5-dev \
         x11proto-core-dev libx11-dev lib32z1-dev libgl1-mesa-dev libxml2-utils \
-        xsltproc unzip fontconfig libncurses5 libncurses5-dev openjdk-11-jdk \
-        python3-pip python-is-python3
+        xsltproc unzip fontconfig libncurses5 libncurses5-dev openjdk-8-jdk
         
-        # Ubuntu 22.04 需要从 deadsnakes PPA 安装 Python 2
-        sudo apt-get install -y software-properties-common
-        sudo add-apt-repository -y ppa:deadsnakes/ppa
-        sudo apt-get update
-        sudo apt-get install -y python2.7
+        # 安装Python 2
+        sudo apt-get install -y python2
         
-        # 创建 Python 2 软链接
-        sudo ln -sf /usr/bin/python2.7 /usr/bin/python2
+        # 建立软链接
         sudo ln -sf /usr/bin/python2 /usr/bin/python
         
         # 验证版本
         python --version
-        java -version
-    
-    - name: Set up Git
-      run: |
+        
+        # 设置Git用户信息
         git config --global user.email "github-actions@github.com"
         git config --global user.name "GitHub Actions"
-        # 配置 Git 以节省空间
-        git config --global core.compression 0
-        git config --global core.loosecompression 0
-        git config --global pack.depth 1
-    
-    - name: Install repo tool
+        
+        # 安装Python 3和pip
+        sudo apt-get install -y python3 python3-pip
+        
+    - name: Setup repo tool
       run: |
+        # 下载repo工具
         mkdir -p ~/bin
-        curl -s https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
+        curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
         chmod a+x ~/bin/repo
-        export PATH="$HOME/bin:$PATH"
-        echo "PATH=$PATH" >> $GITHUB_ENV
-    
-    - name: Initialize repo with shallow clone
-      run: |
-        echo "=== 初始化 TWRP 仓库 (浅克隆) ==="
-        mkdir -p twrp-aosp
-        cd twrp-aosp
         
-        # 使用浅克隆节省空间
-        if [ "${{ github.event.inputs.repo_depth }}" = "1" ]; then
-          echo "使用浅克隆模式"
-          ~/bin/repo init -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git -b ${{ github.event.inputs.manifest_branch }} --depth=1
+        # 添加到环境变量
+        echo 'export PATH=~/bin:$PATH' >> ~/.bashrc
+        echo 'export PATH=~/bin:$PATH' >> $GITHUB_ENV
+        
+    - name: Initialize and sync repo
+      run: |
+        # 创建工作目录
+        mkdir -p ${{ env.WORKSPACE }}/twrp-aosp
+        cd ${{ env.WORKSPACE }}/twrp-aosp
+        
+        # 初始化仓库
+        if [ "${{ github.event.inputs.SYNC_METHOD }}" = "shallow" ]; then
+          repo init --depth=1 -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git -b ${{ github.event.inputs.MANIFEST_BRANCH }}
         else
-          echo "使用完整克隆模式"
-          ~/bin/repo init -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git -b ${{ github.event.inputs.manifest_branch }}
+          repo init -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git -b ${{ github.event.inputs.MANIFEST_BRANCH }}
         fi
-    
-    - name: Sync repo with limited threads
+        
+        # 开始同步
+        repo sync -j$(nproc)
+        
+    - name: Download boot.img and generate device tree
+      if: ${{ github.event.inputs.BOOT_IMG_URL != '' }}
       run: |
-        echo "=== 同步仓库 ==="
-        cd twrp-aosp
+        cd ${{ env.WORKSPACE }}/twrp-aosp
         
-        # 限制同步线程数以减少内存和磁盘使用
-        SYNC_JOBS=2
-        
-        # 分步同步，先同步主要仓库
-        echo "第一步：同步主要仓库..."
-        ~/bin/repo sync -j$SYNC_JOBS --force-sync --no-clone-bundle --no-tags --current-branch
-        
-        # 检查磁盘空间
-        echo "同步后磁盘空间:"
-        df -h /home/runner | tail -1
-    
-    - name: Download boot.img
-      run: |
-        echo "=== 下载 boot.img ==="
-        cd twrp-aosp
-        mkdir -p boot_images
-        curl -L "${{ github.event.inputs.boot_img_url }}" -o boot_images/boot.img
-        
-        if [ -f "boot_images/boot.img" ]; then
-          echo "boot.img 下载成功"
-          ls -lh boot_images/
-        else
-          echo "boot.img 下载失败"
-          exit 1
-        fi
-    
-    - name: Install twrpdtgen and generate device tree
-      run: |
-        echo "=== 安装 twrpdtgen 并生成设备树 ==="
-        cd twrp-aosp
+        # 安装twrpdtgen
         pip3 install twrpdtgen
         
+        # 创建设备目录
+        mkdir -p device/${{ github.event.inputs.MANUFACTURER }}
+        
+        # 下载boot.img
+        wget -O boot.img "${{ github.event.inputs.BOOT_IMG_URL }}"
+        
         # 生成设备树
-        echo "正在生成设备树..."
-        python3 -m twrpdtgen -o device/${{ github.event.inputs.device_manufacturer }}/${{ github.event.inputs.device_name }} boot_images/boot.img
+        python3 -m twrpdtgen -o device/${{ github.event.inputs.MANUFACTURER }}/${{ github.event.inputs.DEVICE_NAME }} boot.img
         
-        # 检查是否生成成功
-        if [ -d "device/${{ github.event.inputs.device_manufacturer }}/${{ github.event.inputs.device_name }}" ]; then
-          echo "设备树生成成功"
-        else
-          echo "设备树生成失败"
-          exit 1
-        fi
-    
-    - name: Clean up unnecessary files before build
+        # 清理临时文件
+        rm -f boot.img
+        
+    - name: Setup device tree (if provided)
+      if: ${{ github.event.inputs.BOOT_IMG_URL == '' }}
       run: |
-        echo "=== 清理不必要的文件以释放空间 ==="
-        cd twrp-aosp
+        echo "如果没有提供boot.img链接，请确保设备树已预先放置在正确位置"
+        echo "设备树路径应为: device/${{ github.event.inputs.MANUFACTURER }}/${{ github.event.inputs.DEVICE_NAME }}"
         
-        # 删除不需要的目录
-        echo "删除不必要的文件..."
-        find . -name "*.git" -type d -prune -exec rm -rf {} + 2>/dev/null || true
-        find . -name ".repo" -type d -prune -exec rm -rf {} + 2>/dev/null || true
-        
-        # 检查磁盘空间
-        echo "清理后磁盘空间:"
-        df -h /home/runner | tail -1
-        du -sh . || true
-    
-    - name: Setup build environment
+    - name: Build TWRP
       run: |
-        echo "=== 设置编译环境 ==="
-        cd twrp-aosp
+        cd ${{ env.WORKSPACE }}/twrp-aosp
+        
+        # 加载编译环境变量
         source build/envsetup.sh
-        lunch omni_${{ github.event.inputs.device_name }}-eng
-    
-    - name: Build TWRP with limited resources
-      run: |
-        echo "=== 开始编译 TWRP ==="
-        cd twrp-aosp
         
-        # 设置编译参数以节省资源
+        # 使用lunch命令指定设备
+        lunch omni_${{ github.event.inputs.DEVICE_NAME }}-eng
+        
+        # 设置环境变量
         export ALLOW_MISSING_DEPENDENCIES=true
-        export LC_ALL=C
         
-        # 使用更少的线程编译
-        BUILD_JOBS=2
-        
-        echo "使用 $BUILD_JOBS 个线程编译"
-        make -j$BUILD_JOBS ${{ github.event.inputs.build_target }}
-        
-        # 检查编译结果
-        if [ -d "out/target/product/${{ github.event.inputs.device_name }}" ]; then
-          echo "编译完成"
-          ls -la out/target/product/${{ github.event.inputs.device_name }}/
+        # 开始编译
+        if [ "${{ github.event.inputs.BUILD_TARGET }}" = "bootimage" ]; then
+          mka bootimage
         else
-          echo "编译失败"
-          exit 1
+          mka recoveryimage
         fi
-    
-    - name: Clean up after build
-      run: |
-        echo "=== 编译后清理 ==="
-        cd twrp-aosp
         
-        # 删除中间文件以节省空间
-        echo "删除中间文件..."
-        rm -rf out/soong/.intermediates || true
-        rm -rf out/.lock || true
-        rm -rf out/.module_paths || true
-        rm -rf out/.bootstrap || true
-        
-        # 检查最终磁盘使用
-        echo "最终磁盘空间:"
-        df -h /home/runner | tail -1
-    
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: twrp-build-${{ github.event.inputs.device_name }}
+        name: twrp-build-${{ github.event.inputs.DEVICE_NAME }}
         path: |
-          twrp-aosp/out/target/product/${{ github.event.inputs.device_name }}/*.img
-          twrp-aosp/out/target/product/${{ github.event.inputs.device_name }}/*.zip
+          ${{ env.WORKSPACE }}/twrp-aosp/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/${{ github.event.inputs.BUILD_TARGET }}.img
+          ${{ env.WORKSPACE }}/twrp-aosp/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*.zip
+          ${{ env.WORKSPACE }}/twrp-aosp/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*vendor*.img
         retention-days: 7
-    
+        
     - name: Create Release
-      if: success()
       uses: softprops/action-gh-release@v2
+      if: ${{ github.event.inputs.CREATE_RELEASE == 'true' }}
       with:
         files: |
-          twrp-aosp/out/target/product/${{ github.event.inputs.device_name }}/*.img
-          twrp-aosp/out/target/product/${{ github.event.inputs.device_name }}/*.zip
-        name: ${{ github.event.inputs.device_name }}-${{ github.run_id }}
+          ${{ env.WORKSPACE }}/twrp-aosp/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/${{ github.event.inputs.BUILD_TARGET }}.img
+          ${{ env.WORKSPACE }}/twrp-aosp/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*.zip
+          ${{ env.WORKSPACE }}/twrp-aosp/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*vendor*.img
+        name: ${{ github.event.inputs.DEVICE_NAME }}-${{ github.run_id }}
         tag_name: ${{ github.run_id }}
         body: |
           Build ID: ${{ github.run_id }}
-          Device: ${{ github.event.inputs.device_name }}
-          Manufacturer: ${{ github.event.inputs.device_manufacturer }}
-          Manifest Branch: ${{ github.event.inputs.manifest_branch }}
-          Build Target: ${{ github.event.inputs.build_target }}
-          Commit: ${{ github.sha }}
-        draft: false
-        prerelease: false
+          Device: ${{ github.event.inputs.DEVICE_NAME }}
+          Manufacturer: ${{ github.event.inputs.MANUFACTURER }}
+          Manifest Branch: ${{ github.event.inputs.MANIFEST_BRANCH }}
+          Build Target: ${{ github.event.inputs.BUILD_TARGET }}
+          Sync Method: ${{ github.event.inputs.SYNC_METHOD }}
+          Generated from boot.img: ${{ github.event.inputs.BOOT_IMG_URL != '' }}
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
