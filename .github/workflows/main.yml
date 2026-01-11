@@ -482,4 +482,6 @@ jobs:
 
     - name: Set Swap Space
       run: |
-        echo "=== 
+        echo "=== 设置交换空间 ==="
+        SWAP_SIZE=${{ github.event.inputs.SWAP_SIZE }}
+        
