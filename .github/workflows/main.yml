@@ -64,9 +64,11 @@ on:
       COMMON_TREE_URL:
         description: '公共设备树URL (可选)'
         required: false
+        default: ''
       COMMON_PATH:
         description: '公共设备树路径 (可选)'
         required: false
+        default: ''
       
       # 高级选项
       SYNC_METHOD:
@@ -189,8 +191,8 @@ jobs:
     - name: Setup SSH Keys
       if: |
         startsWith(github.event.inputs.MANIFEST_URL, 'git@github.com') || 
-        startsWith(github.event.inputs.DEVICE_TREE_URL, 'git@github.com') ||
-        startsWith(github.event.inputs.COMMON_TREE_URL, 'git@github.com')
+        (github.event.inputs.DEVICE_TREE_URL != '' && startsWith(github.event.inputs.DEVICE_TREE_URL, 'git@github.com')) ||
+        (github.event.inputs.COMMON_TREE_URL != '' && startsWith(github.event.inputs.COMMON_TREE_URL, 'git@github.com'))
       uses: webfactory/ssh-agent@v0.9.0
       with:
         ssh-private-key: |
@@ -300,7 +302,7 @@ jobs:
         du -sh .
 
     - name: Handle prebuilt device tree
-      if: ${{ github.event.inputs.DEVICE_TREE_SOURCE == 'prebuilt' }}
+      if: github.event.inputs.DEVICE_TREE_SOURCE == 'prebuilt'
       run: |
         echo "=== 使用预置设备树 ==="
         cd workspace
@@ -336,7 +338,7 @@ jobs:
         fi
 
     - name: Generate device tree from boot.img
-      if: ${{ github.event.inputs.DEVICE_TREE_SOURCE == 'generate' && github.event.inputs.BOOT_IMG_URL != '' }}
+      if: github.event.inputs.DEVICE_TREE_SOURCE == 'generate' && github.event.inputs.BOOT_IMG_URL != ''
       run: |
         echo "=== 从boot.img生成设备树 ==="
         cd workspace
@@ -374,7 +376,7 @@ jobs:
         rm -f boot.img
 
     - name: Clone external device tree
-      if: ${{ github.event.inputs.DEVICE_TREE_SOURCE == 'external' && github.event.inputs.DEVICE_TREE_URL != '' }}
+      if: github.event.inputs.DEVICE_TREE_SOURCE == 'external' && github.event.inputs.DEVICE_TREE_URL != ''
       run: |
         echo "=== 克隆外部设备树 ==="
         cd workspace
@@ -415,11 +417,7 @@ jobs:
         fi
 
     - name: Clone common tree
-      if: |
-        github.event.inputs.COMMON_TREE_URL != null
-        && github.event.inputs.COMMON_PATH != null
-        && github.event.inputs.COMMON_TREE_URL != ''
-        && github.event.inputs.COMMON_PATH != ''
+      if: github.event.inputs.COMMON_TREE_URL != '' && github.event.inputs.COMMON_PATH != ''
       run: |
         echo "=== 克隆公共设备树 ==="
         cd workspace
@@ -481,8 +479,8 @@ jobs:
         fi
 
     - name: Set Swap Space
-    
-     run: |
+      run: |
+      
         echo "=== 设置交换空间 ==="
         SWAP_SIZE=${{ github.event.inputs.SWAP_SIZE }}
         
