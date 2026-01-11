@@ -477,84 +477,145 @@ jobs:
           echo "请检查设备树路径：$DEVICE_PATH"
           exit 1
         fi
-
-    - name: Set Swap Space
+    - name: Setup device tree properly
       run: |
-      
-        echo "=== 设置交换空间 ==="
-        SWAP_SIZE=${{ github.event.inputs.SWAP_SIZE }}
-        
-        # 检查是否已经有交换空间
-        if [ -f /swapfile ]; then
-          echo "交换空间已存在，跳过创建"
-        else
-          echo "创建 ${SWAP_SIZE}GB 交换空间..."
-          sudo fallocate -l ${SWAP_SIZE}G /swapfile
-          sudo chmod 600 /swapfile
-          sudo mkswap /swapfile
-          sudo swapon /swapfile
-          
-          # 验证交换空间
-          echo "交换空间状态:"
-          free -h
-          swapon --show
-        fi
-
-    - name: Setup ccache
-      run: |
-        echo "=== 配置ccache ==="
-        export USE_CCACHE=1
-        export CCACHE_EXEC=/usr/bin/ccache
-        export CCACHE_DIR=/tmp/ccache
-        
-        # 创建ccache目录
-        mkdir -p $CCACHE_DIR
-        
-        # 设置ccache大小
-        ccache -M 50G
-        
-        echo "ccache配置完成"
-        ccache -s
-
-    - name: Prepare build configuration
-      run: |
-        echo "=== 准备编译配置 ==="
+        echo "=== 设置设备树 ==="
         cd workspace
         
-        # 确定设备名称
-        if [ -n "${{ github.event.inputs.DEVICE_NAME }}" ]; then
-          DEVICE_NAME="${{ github.event.inputs.DEVICE_NAME }}"
+        # 确定设备树路径
+        if [ -n "${{ github.event.inputs.DEVICE_PATH }}" ]; then
+          DEVICE_PATH="${{ github.event.inputs.DEVICE_PATH }}"
         else
-          # 从设备路径提取设备名
-          if [ -n "${{ github.event.inputs.DEVICE_PATH }}" ]; then
-            DEVICE_PATH="${{ github.event.inputs.DEVICE_PATH }}"
-            DEVICE_NAME=$(basename "$DEVICE_PATH")
+          # 对于 dove_evb4，使用正确的路径
+          if [ "${{ github.event.inputs.DEVICE_NAME }}" = "dove_evb4" ]; then
+            DEVICE_PATH="device/samsung/dove_evb4"
           else
-            echo "错误：无法确定设备名称"
-            exit 1
+            # 尝试从设备名推断厂商
+            if [[ "${{ github.event.inputs.DEVICE_NAME }}" =~ ^([^_]+)_([^_]+) ]]; then
+              MANUFACTURER="${BASH_REMATCH[1]}"
+              DEVICE="${BASH_REMATCH[2]}"
+              DEVICE_PATH="device/$MANUFACTURER/$DEVICE"
+            else
+              # 默认使用generic作为厂商
+              DEVICE_PATH="device/generic/${{ github.event.inputs.DEVICE_NAME }}"
+            fi
           fi
         fi
         
-        # 确定Makefile名称
-        if [ -n "${{ github.event.inputs.MAKEFILE_NAME }}" ]; then
-          MAKEFILE_NAME="${{ github.event.inputs.MAKEFILE_NAME }}"
-        else
-          # 自动生成Makefile名称
-          if [[ "$DEVICE_NAME" =~ ^[a-zA-Z0-9_]+$ ]]; then
-            MAKEFILE_NAME="omni_${DEVICE_NAME}"
-          else
-            echo "错误：无法自动生成Makefile名称，请手动指定"
-            exit 1
+        echo "设备树路径: $DEVICE_PATH"
+        
+        # 检查设备树是否存在
+        if [ -d "$DEVICE_PATH" ]; then
+          echo "✅ 设备树存在"
+          
+          # 显示设备树内容
+          echo "设备树内容:"
+          ls -la "$DEVICE_PATH/"
+          
+          # 检查必要的配置文件
+          echo "检查配置文件..."
+          
+          # 查找AndroidProducts.mk
+          if [ -f "$DEVICE_PATH/AndroidProducts.mk" ]; then
+            echo "✅ 找到 AndroidProducts.mk"
+            
+            # 读取产品名称
+            PRODUCT_NAME=$(grep -o 'PRODUCT_NAME\s*:=\s*[^ ]*' "$DEVICE_PATH/AndroidProducts.mk" | head -1 | awk -F':=' '{print \$2}' | xargs)
+            if [ -n "$PRODUCT_NAME" ]; then
+              echo "产品名称: $PRODUCT_NAME"
+              echo "PRODUCT_NAME=$PRODUCT_NAME" >> $GITHUB_ENV
+            fi
           fi
+          
+          # 查找所有.mk文件
+          echo "查找所有.mk文件:"
+          find "$DEVICE_PATH" -name "*.mk" | head -10
+          
+          # 检查是否有vendorsetup.sh
+          if [ -f "$DEVICE_PATH/vendorsetup.sh" ]; then
+            echo "✅ 找到 vendorsetup.sh"
+            echo "vendorsetup.sh内容:"
+            cat "$DEVICE_PATH/vendorsetup.sh"
+            
+            # 执行vendorsetup.sh
+            source "$DEVICE_PATH/vendorsetup.sh"
+          else
+            echo "⚠️ 未找到 vendorsetup.sh，将手动创建"
+            
+            # 手动创建vendorsetup.sh
+            VENDORSETUP_FILE="$DEVICE_PATH/vendorsetup.sh"
+            echo "创建 $VENDORSETUP_FILE"
+            
+            # 确定产品名称
+            if [ -n "${{ github.event.inputs.MAKEFILE_NAME }}" ]; then
+              PRODUCT_NAME="${{ github.event.inputs.MAKEFILE_NAME }}"
+            else
+              PRODUCT_NAME="twrp_${{ github.event.inputs.DEVICE_NAME }}"
+            fi
+            
+            cat > "$VENDORSETUP_FILE" << EOF
+add_lunch_combo ${PRODUCT_NAME}-eng
+add_lunch_combo ${PRODUCT_NAME}-userdebug
+add_lunch_combo ${PRODUCT_NAME}-user
+EOF
+            
+            chmod +x "$VENDORSETUP_FILE"
+            echo "vendorsetup.sh内容:"
+            cat "$VENDORSETUP_FILE"
+          fi
+          
+          # 检查并修复AndroidProducts.mk
+          if [ ! -f "$DEVICE_PATH/AndroidProducts.mk" ]; then
+            echo "⚠️ 未找到 AndroidProducts.mk，创建..."
+            cat > "$DEVICE_PATH/AndroidProducts.mk" << EOF
+PRODUCT_MAKEFILES := \\
+    \$(LOCAL_DIR)/${PRODUCT_NAME}.mk
+
+COMMON_LUNCH_CHOICES := \\
+    ${PRODUCT_NAME}-eng \\
+    ${PRODUCT_NAME}-userdebug \\
+    ${PRODUCT_NAME}-user
+EOF
+          fi
+          
+          # 检查并修复设备.mk文件
+          DEVICE_MK_FILE="$DEVICE_PATH/${PRODUCT_NAME}.mk"
+          if [ ! -f "$DEVICE_MK_FILE" ]; then
+            echo "⚠️ 未找到 $DEVICE_MK_FILE，创建..."
+            
+            # 查找现有的.mk文件
+            EXISTING_MK=$(find "$DEVICE_PATH" -name "*.mk" ! -name "AndroidProducts.mk" | head -1)
+            if [ -n "$EXISTING_MK" ]; then
+              echo "使用现有文件: $EXISTING_MK"
+              cp "$EXISTING_MK" "$DEVICE_MK_FILE"
+            else
+              cat > "$DEVICE_MK_FILE" << EOF
+\$(call inherit-product, device/samsung/dove_evb4/device.mk)
+
+# Inherit from those products. Most specific first.
+\$(call inherit-product, \$(SRC_TARGET_DIR)/product/core_64_bit.mk)
+\$(call inherit-product, \$(SRC_TARGET_DIR)/product/full_base_telephony.mk)
+
+# Inherit some common TWRP stuff.
+\$(call inherit-product, vendor/twrp/config/common.mk)
+
+# Device identifier. This must come after all inclusions
+PRODUCT_DEVICE := ${{ github.event.inputs.DEVICE_NAME }}
+PRODUCT_NAME := ${PRODUCT_NAME}
+PRODUCT_BRAND := samsung
+PRODUCT_MODEL := dove_evb4
+PRODUCT_MANUFACTURER := samsung
+EOF
+            fi
+          fi
+        else
+          echo "❌ 错误：设备树不存在于 $DEVICE_PATH"
+          echo "当前目录结构:"
+          find . -name "*${{ github.event.inputs.DEVICE_NAME }}*" -type d | head -20
+          echo "device目录内容:"
+          find device -type d 2>/dev/null | head -20
+          exit 1
         fi
-        
-        echo "设备名称: $DEVICE_NAME"
-        echo "Makefile名称: $MAKEFILE_NAME"
-        echo "构建目标: ${{ github.event.inputs.BUILD_TARGET }}"
-        
-        # 保存到环境变量
-        echo "DEVICE_NAME=$DEVICE_NAME" >> $GITHUB_ENV
-        echo "MAKEFILE_NAME=$MAKEFILE_NAME" >> $GITHUB_ENV
 
     - name: Start compilation
       timeout-minutes: 120
@@ -569,28 +630,108 @@ jobs:
         echo "加载编译环境..."
         source build/envsetup.sh
         
-        # 使用lunch命令指定设备
-        echo "选择设备: ${{ env.MAKEFILE_NAME }}-eng"
-        lunch ${{ env.MAKEFILE_NAME }}-eng
+        # 首先尝试添加设备树到lunch菜单
+        echo "添加设备树到lunch菜单..."
+        
+        # 确定设备树路径
+        if [ -n "${{ github.event.inputs.DEVICE_PATH }}" ]; then
+          DEVICE_PATH="${{ github.event.inputs.DEVICE_PATH }}"
+        else
+          DEVICE_PATH="device/samsung/dove_evb4"
+        fi
+        
+        # 检查并执行vendorsetup.sh
+        if [ -f "$DEVICE_PATH/vendorsetup.sh" ]; then
+          echo "执行 vendorsetup.sh..."
+          source "$DEVICE_PATH/vendorsetup.sh"
+        fi
+        
+        # 确定lunch参数
+        if [ -n "${{ env.PRODUCT_NAME }}" ]; then
+          LUNCH_TARGET="${{ env.PRODUCT_NAME }}-eng"
+        elif [ -n "${{ github.event.inputs.MAKEFILE_NAME }}" ]; then
+          LUNCH_TARGET="${{ github.event.inputs.MAKEFILE_NAME }}-eng"
+        else
+          LUNCH_TARGET="twrp_${{ github.event.inputs.DEVICE_NAME }}-eng"
+        fi
+        
+        echo "选择设备: $LUNCH_TARGET"
+        
+        # 尝试使用lunch
+        if ! lunch $LUNCH_TARGET; then
+          echo "⚠️ lunch命令失败，尝试替代方案..."
+          
+          # 方案1: 直接设置环境变量
+          echo "尝试方案1: 直接设置环境变量..."
+          export TARGET_DEVICE="${{ github.event.inputs.DEVICE_NAME }}"
+          export TARGET_PRODUCT="twrp_${{ github.event.inputs.DEVICE_NAME }}"
+          export TARGET_BUILD_VARIANT="eng"
+          export TARGET_BUILD_TYPE="release"
+          
+          echo "手动设置的环境变量:"
+          echo "TARGET_DEVICE: $TARGET_DEVICE"
+          echo "TARGET_PRODUCT: $TARGET_PRODUCT"
+          echo "TARGET_BUILD_VARIANT: $TARGET_BUILD_VARIANT"
+          
+          # 方案2: 使用mka直接编译
+          echo "尝试方案2: 直接编译..."
+        fi
         
         # 设置编译环境
         export ALLOW_MISSING_DEPENDENCIES=true
         export LC_ALL=C
+        export SOONG_ALLOW_MISSING_DEPENDENCIES=true
+        export TW_DEVICE_VERSION="${{ github.event.inputs.DEVICE_NAME }}"
+        
+        # 设置输出目录
+        export OUT_DIR_COMMON_BASE=$(pwd)/out
+        
+        echo "编译环境设置完成"
+        echo "当前环境变量:"
+        env | grep -E "TARGET|PRODUCT|DEVICE" | sort
         
         # 根据构建目标选择编译命令
         BUILD_TARGET="${{ github.event.inputs.BUILD_TARGET }}"
         echo "构建目标: $BUILD_TARGET"
         
+        # 设置并行编译线程数
+        export MAKEFLAGS="-j$(nproc --all)"
+        
+        # 编译命令
         if [ "$BUILD_TARGET" = "recovery" ]; then
           echo "编译recovery镜像..."
-          mka recoveryimage
+          make -j$(nproc --all) recoveryimage
         elif [ "$BUILD_TARGET" = "boot" ]; then
           echo "编译boot镜像..."
-          mka bootimage
+          make -j$(nproc --all) bootimage
         else
           echo "错误：未知的构建目标: $BUILD_TARGET"
           exit 1
         fi
+        
+        # 检查编译结果
+        COMPILE_EXIT_CODE=$?
+        if [ $COMPILE_EXIT_CODE -eq 0 ]; then
+          echo "✅ 编译成功"
+        else
+          echo "❌ 编译失败，退出码: $COMPILE_EXIT_CODE"
+          
+          # 尝试使用mka
+          echo "尝试使用mka编译..."
+          if [ "$BUILD_TARGET" = "recovery" ]; then
+            mka recoveryimage || {
+              echo "❌ mka也失败"
+              exit 1
+            }
+          elif [ "$BUILD_TARGET" = "boot" ]; then
+            mka bootimage || {
+              echo "❌ mka也失败"
+              exit 1
+            }
+          fi
+        fi
+
+
         
         # 检查编译结果
         if [ $? -eq 0 ]; then
