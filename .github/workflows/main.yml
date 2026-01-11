@@ -445,4 +445,6 @@ jobs:
           exit 1
         fi
 
-    - name: Set Swap
+    - name: Set Swap Space
+      run: |
+        echo "=== 设置交换空间 ==="
