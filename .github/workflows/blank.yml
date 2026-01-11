@@ -61,10 +61,6 @@ on:
           - 'true'
           - 'false'
 
-env:
-  WORKSPACE: /home/runner/work/twrp-build/twrp-build
-  REPO_PATH: /home/runner/bin
-
 jobs:
   build:
     runs-on: ubuntu-22.04
@@ -102,12 +98,12 @@ jobs:
     - name: Setup repo tool
       run: |
         # 下载repo工具
-        mkdir -p ${{ env.REPO_PATH }}
-        curl -s https://storage.googleapis.com/git-repo-downloads/repo > ${{ env.REPO_PATH }}/repo
-        chmod a+x ${{ env.REPO_PATH }}/repo
+        mkdir -p ~/bin
+        curl -s https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
+        chmod a+x ~/bin/repo
         
         # 添加到PATH
-        echo "${{ env.REPO_PATH }}" >> $GITHUB_PATH
+        echo "$HOME/bin" >> $GITHUB_PATH
         
     - name: Verify repo tool
       run: |
@@ -118,7 +114,7 @@ jobs:
       id: init_repo
       run: |
         echo "=== 初始化仓库 ==="
-        cd ${{ env.WORKSPACE }}
+        echo "当前工作目录: $(pwd)"
         
         # 创建工作目录
         mkdir -p twrp-aosp
@@ -158,7 +154,10 @@ jobs:
       timeout-minutes: 60
       run: |
         echo "=== 同步仓库代码 ==="
-        cd ${{ env.WORKSPACE }}/twrp-aosp
+        echo "当前工作目录: $(pwd)"
+        
+        # 进入工作目录
+        cd twrp-aosp
         
         # 设置环境变量以优化同步
         export REPO_SYNC_FLAGS="-j$(nproc) --no-clone-bundle --no-tags"
@@ -206,13 +205,13 @@ jobs:
       if: ${{ github.event.inputs.DEVICE_TREE_SOURCE == 'prebuilt' }}
       run: |
         echo "=== 使用预置设备树 ==="
-        cd ${{ env.WORKSPACE }}
+        echo "当前工作目录: $(pwd)"
         
         # 检查设备树是否存在
         if [ -d "device/${{ github.event.inputs.MANUFACTURER }}/${{ github.event.inputs.DEVICE_NAME }}" ]; then
           echo "找到预置设备树，复制到源码目录"
-          mkdir -p ${{ env.WORKSPACE }}/twrp-aosp/device/${{ github.event.inputs.MANUFACTURER }}
-          cp -r device/${{ github.event.inputs.MANUFACTURER }}/${{ github.event.inputs.DEVICE_NAME }} ${{ env.WORKSPACE }}/twrp-aosp/device/${{ github.event.inputs.MANUFACTURER }}/
+          mkdir -p twrp-aosp/device/${{ github.event.inputs.MANUFACTURER }}
+          cp -r device/${{ github.event.inputs.MANUFACTURER }}/${{ github.event.inputs.DEVICE_NAME }} twrp-aosp/device/${{ github.event.inputs.MANUFACTURER }}/
         else
           echo "错误：未找到预置设备树"
           echo "请确保设备树位于：device/${{ github.event.inputs.MANUFACTURER }}/${{ github.event.inputs.DEVICE_NAME }}"
@@ -223,7 +222,7 @@ jobs:
       if: ${{ github.event.inputs.DEVICE_TREE_SOURCE == 'generate' && github.event.inputs.BOOT_IMG_URL != '' }}
       run: |
         echo "=== 从boot.img生成设备树 ==="
-        cd ${{ env.WORKSPACE }}/twrp-aosp
+        cd twrp-aosp
         
         # 安装twrpdtgen
         pip3 install twrpdtgen
@@ -246,7 +245,7 @@ jobs:
       if: ${{ github.event.inputs.DEVICE_TREE_SOURCE == 'external' && github.event.inputs.EXTERNAL_DEVICE_TREE_URL != '' }}
       run: |
         echo "=== 克隆外部设备树 ==="
-        cd ${{ env.WORKSPACE }}/twrp-aosp
+        cd twrp-aosp
         
         # 创建设备目录
         mkdir -p device/${{ github.event.inputs.MANUFACTURER }}
@@ -269,7 +268,7 @@ jobs:
     - name: Validate device tree
       run: |
         echo "=== 验证设备树 ==="
-        cd ${{ env.WORKSPACE }}/twrp-aosp
+        cd twrp-aosp
         
         DEVICE_TREE_PATH="device/${{ github.event.inputs.MANUFACTURER }}/${{ github.event.inputs.DEVICE_NAME }}"
         
@@ -294,7 +293,7 @@ jobs:
       timeout-minutes: 120
       run: |
         echo "=== 开始编译TWRP ==="
-        cd ${{ env.WORKSPACE }}/twrp-aosp
+        cd twrp-aosp
         
         # 加载编译环境变量
         source build/envsetup.sh
@@ -317,7 +316,7 @@ jobs:
     - name: List build artifacts
       run: |
         echo "=== 编译产物列表 ==="
-        cd ${{ env.WORKSPACE }}/twrp-aosp
+        cd twrp-aosp
         
         BUILD_OUT_DIR="out/target/product/${{ github.event.inputs.DEVICE_NAME }}"
         
@@ -350,8 +349,8 @@ jobs:
       with:
         name: twrp-${{ github.event.inputs.DEVICE_NAME }}-${{ github.run_id }}
         path: |
-          ${{ env.WORKSPACE }}/twrp-aosp/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*.img
-          ${{ env.WORKSPACE }}/twrp-aosp/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*.zip
+          twrp-aosp/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*.img
+          twrp-aosp/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*.zip
         retention-days: 7
         
     - name: Create Release
@@ -359,8 +358,8 @@ jobs:
       uses: softprops/action-gh-release@v2
       with:
         files: |
-          ${{ env.WORKSPACE }}/twrp-aosp/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/${{ github.event.inputs.BUILD_TARGET }}.img
-          ${{ env.WORKSPACE }}/twrp-aosp/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*.zip
+          twrp-aosp/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/${{ github.event.inputs.BUILD_TARGET }}.img
+          twrp-aosp/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*.zip
         name: TWRP-${{ github.event.inputs.DEVICE_NAME }}-${{ github.run_number }}
         tag_name: twrp-${{ github.event.inputs.DEVICE_NAME }}-${{ github.run_number }}
         body: |
