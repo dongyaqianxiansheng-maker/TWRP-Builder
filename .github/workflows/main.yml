@@ -126,17 +126,56 @@ jobs:
       run: |
         echo "=== 安装编译依赖 ==="
         sudo apt update && sudo apt upgrade -y
-        DEBIAN_FRONTEND=noninteractive sudo apt install -yq \
-            linux-modules-extra-$(uname -r) \
-            gperf gcc-multilib gcc-10-multilib g++-multilib g++-10-multilib \
-            libc6-dev x11proto-core-dev libx11-dev tree lib32z-dev libgl1-mesa-dev libxml2-utils \
-            xsltproc bc ccache lib32readline-dev lib32z1-dev liblz4-tool libsdl1.2-dev \
-            libwxgtk3.2-dev libxml2 lzop pngcrush schedtool squashfs-tools \
-            imagemagick libbz2-dev lzma ncftp qemu-user-static libstdc++-10-dev \
-            libncurses6 python3 tar python2 python-is-python2 \
-            wget curl git-core gnupg flex bison build-essential zip \
-            zlib1g-dev gcc-multilib g++-multilib libc6-dev-i386 lib32ncurses5-dev \
-            lib32z1-dev fontconfig unzip
+        
+        # 基础编译工具
+        sudo apt install -y \
+            bc \
+            bison \
+            build-essential \
+            ccache \
+            curl \
+            flex \
+            g++ \
+            g++-multilib \
+            gcc \
+            gcc-multilib \
+            git \
+            git-lfs \
+            gnupg \
+            gperf \
+            imagemagick \
+            lib32ncurses5-dev \
+            lib32readline-dev \
+            lib32z1-dev \
+            libc6-dev-i386 \
+            libgl1-mesa-dev \
+            liblz4-tool \
+            libncurses5-dev \
+            libsdl1.2-dev \
+            libssl-dev \
+            libwxgtk3.2-dev \
+            libxml2 \
+            libxml2-utils \
+            lzop \
+            m4 \
+            make \
+            ncftp \
+            pngcrush \
+            python3 \
+            python-is-python2 \
+            rsync \
+            schedtool \
+            squashfs-tools \
+            tree \
+            unzip \
+            wget \
+            xsltproc \
+            zip \
+            zlib1g-dev
+        
+        # 安装Python2
+        sudo apt install -y python2 python2-dev
+        sudo ln -sf /usr/bin/python2 /usr/bin/python
         
         # 配置Git优化
         git config --global user.name "GitHub Actions"
@@ -440,11 +479,4 @@ jobs:
             find "$DEVICE_PATH" -name "*.mk" -o -name "*.sh" | head -20
           fi
         else
-          echo "❌ 错误：设备树不存在"
-          echo "请检查设备树路径：$DEVICE_PATH"
-          exit 1
-        fi
-
-    - name: Set Swap Space
-      run: |
-        echo "=== 设置交换空间 ==="
+          echo "❌ 错误
