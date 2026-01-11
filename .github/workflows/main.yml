@@ -1,482 +1,157 @@
-name: TWRP Build Enhanced
+name: TWRP Builder
 
 on:
   workflow_dispatch:
     inputs:
-      # 基础配置
-      MANIFEST_URL:
-        description: 'Manifest仓库URL (支持HTTPS和SSH)'
-        required: true
-        default: 'https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp'
       MANIFEST_BRANCH:
-        description: 'Manifest分支'
+        description: 'TWRP manifest branch'
         required: true
-        default: 'twrp-12.1'
+        default: 'android-12.1'
+        type: choice
+        options:
+          - 'android-9.0'
+          - 'android-10.0'
+          - 'android-11.0'
+          - 'android-12.1'
+          - 'android-13.0'
+          - 'android-14.0'
       DEVICE_NAME:
-        description: '设备名称 (如: davinci)'
+        description: 'Device codename (e.g., dove_evb4)'
         required: true
+        default: 'dove_evb4'
+        type: string
+      DEVICE_TREE_SOURCE:
+        description: 'Device tree source (e.g., TeamWin/android_device_samsung_dove_evb4)'
+        required: true
+        default: 'TeamWin/android_device_samsung_dove_evb4'
+        type: string
+      DEVICE_TREE_URL:
+        description: 'Device tree git URL (optional)'
+        required: false
         default: ''
+        type: string
+      DEVICE_TREE_BRANCH:
+        description: 'Device tree branch'
+        required: true
+        default: 'android-12.1'
+        type: string
+      DEVICE_PATH:
+        description: 'Device tree path (e.g., device/samsung/dove_evb4)'
+        required: false
+        default: 'device/samsung/dove_evb4'
+        type: string
       MAKEFILE_NAME:
-        description: 'Makefile名称 (如: omni_davinci)'
-        required: true
-        default: ''
+        description: 'Makefile name (e.g., twrp_dove_evb4)'
+        required: false
+        default: 'twrp_dove_evb4'
+        type: string
       BUILD_TARGET:
-        description: '构建目标'
+        description: 'Build target'
         required: true
         default: 'recovery'
         type: choice
         options:
-          - recovery
-          - boot
-      
-      # 设备树配置
-      DEVICE_TREE_SOURCE:
-        description: '设备树来源'
-        required: true
-        default: 'external'
-        type: choice
-        options:
-          - prebuilt
-          - generate
-          - external
-      
-      # 外部设备树选项
-      DEVICE_TREE_URL:
-        description: '设备树仓库URL (当选择external时使用)'
-        required: false
-        default: ''
-      DEVICE_TREE_BRANCH:
-        description: '设备树分支'
-        required: false
-        default: 'main'
-      DEVICE_PATH:
-        description: '设备树路径 (如: device/xiaomi/davinci)'
-        required: false
-        default: ''
-      
-      # 自动生成选项
-      BOOT_IMG_URL:
-        description: 'boot.img下载链接 (当选择generate时使用)'
-        required: false
-        default: ''
-      
-      # 公共设备树
-      COMMON_TREE_URL:
-        description: '公共设备树URL (可选)'
-        required: false
-        default: ''
-      COMMON_PATH:
-        description: '公共设备树路径 (可选)'
-        required: false
-        default: ''
-      
-      # 高级选项
-      SYNC_METHOD:
-        description: '同步方式'
-        required: true
-        default: 'shallow'
-        type: choice
-        options:
-          - full
-          - shallow
-      SWAP_SIZE:
-        description: '交换空间大小 (GB)'
-        required: true
-        default: '8'
+          - 'recovery'
+          - 'boot'
       CREATE_RELEASE:
-        description: '是否创建Release'
+        description: '是否自动创建Release'
         required: true
-        default: 'false'
+        default: 'true'
         type: choice
         options:
           - 'true'
           - 'false'
 
+env:
+  REPO_URL: https://github.com/TeamWin/android_bootable_recovery
+  REPO_BRANCH: ${{ github.event.inputs.MANIFEST_BRANCH }}
+  DEVICE_NAME: ${{ github.event.inputs.DEVICE_NAME }}
+
 jobs:
   build:
-    if: github.event.repository.owner.id == github.event.sender.id
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: write
+    runs-on: ubuntu-22.04
     timeout-minutes: 180
-    
-    steps:
-    - name: Display Run Parameters
-      run: |
-        echo "::group::构建参数"
-        echo "Manifest URL: ${{ github.event.inputs.MANIFEST_URL }}"
-        echo "Manifest Branch: ${{ github.event.inputs.MANIFEST_BRANCH }}"
-        echo "Device Name: ${{ github.event.inputs.DEVICE_NAME }}"
-        echo "Makefile Name: ${{ github.event.inputs.MAKEFILE_NAME }}"
-        echo "Build Target: ${{ github.event.inputs.BUILD_TARGET }}"
-        echo "Device Tree Source: ${{ github.event.inputs.DEVICE_TREE_SOURCE }}"
-        echo "Device Tree URL: ${{ github.event.inputs.DEVICE_TREE_URL }}"
-        echo "Device Tree Branch: ${{ github.event.inputs.DEVICE_TREE_BRANCH }}"
-        echo "Device Path: ${{ github.event.inputs.DEVICE_PATH }}"
-        echo "Sync Method: ${{ github.event.inputs.SYNC_METHOD }}"
-        echo "Swap Size: ${{ github.event.inputs.SWAP_SIZE }} GB"
-        echo "Create Release: ${{ github.event.inputs.CREATE_RELEASE }}"
-        echo "::endgroup::"
 
+    steps:
     - name: Checkout repository
       uses: actions/checkout@v4
 
-    - name: Cleanup workspace
-      uses: rokibhasansagar/slimhub_actions@main
-
-    - name: Prepare build environment
+    - name: Setup environment
       run: |
-        echo "=== 安装编译依赖 ==="
-        sudo apt update
-        
-        # 基础编译工具
-        sudo apt install -y \
-            bc \
-            bison \
-            build-essential \
-            ccache \
-            curl \
-            flex \
-            g++ \
-            g++-multilib \
-            gcc \
-            gcc-multilib \
-            git \
-            git-lfs \
-            gnupg \
-            gperf \
-            imagemagick \
-            lib32ncurses-dev \
-            lib32readline-dev \
-            lib32z1-dev \
-            libc6-dev-i386 \
-            libgl1-mesa-dev \
-            liblz4-tool \
-            libncurses5-dev \
-            libsdl1.2-dev \
-            libssl-dev \
-            libwxgtk3.2-dev \
-            libxml2 \
-            libxml2-utils \
-            lzop \
-            m4 \
-            make \
-            ncftp \
-            pngcrush \
-            python3 \
-            python3-pip \
-            rsync \
-            schedtool \
-            squashfs-tools \
-            tree \
-            unzip \
-            wget \
-            xsltproc \
-            zip \
-            zlib1g-dev
-        
-        # 配置Git优化
-        git config --global user.name "GitHub Actions"
-        git config --global user.email "github-actions@github.com"
-        git config --global core.compression 0
-        git config --global http.postBuffer 1048576000
-        git config --global https.postBuffer 1048576000
+        echo "=== 设置环境 ==="
+        sudo apt-get update
+        sudo apt-get install -y git-core gnupg flex bison build-essential zip curl zlib1g-dev gcc-multilib g++-multilib libc6-dev-i386 lib32ncurses5-dev x11proto-core-dev libx11-dev lib32z1-dev libgl1-mesa-dev libxml2-utils xsltproc unzip fontconfig python3 python-is-python3
+        sudo apt-get install -y repo bc imagemagick ccache schedtool libssl-dev
+        echo "环境设置完成"
 
-    - name: Install OpenJDK
+    - name: Setup Java
       uses: actions/setup-java@v4
       with:
         distribution: 'zulu'
         java-version: '11'
 
-    - name: Setup SSH Keys
-      if: |
-        startsWith(github.event.inputs.MANIFEST_URL, 'git@github.com') || 
-        (github.event.inputs.DEVICE_TREE_URL != '' && startsWith(github.event.inputs.DEVICE_TREE_URL, 'git@github.com')) ||
-        (github.event.inputs.COMMON_TREE_URL != '' && startsWith(github.event.inputs.COMMON_TREE_URL, 'git@github.com'))
-      uses: webfactory/ssh-agent@v0.9.0
-      with:
-        ssh-private-key: |
-          ${{ secrets.SSH_PRIVATE_KEY }}
-
-    - name: Install repo tool
+    - name: Initialize workspace
       run: |
-        echo "=== 安装repo工具 ==="
-        sudo curl -o /usr/local/bin/repo https://storage.googleapis.com/git-repo-downloads/repo
-        sudo chmod a+x /usr/local/bin/repo
-        repo --version
-
-    - name: Initialize repo with retry
-      id: init_repo
-      run: |
-        echo "=== 初始化仓库 ==="
-        echo "当前目录: $(pwd)"
-        
-        # 创建工作目录
+        echo "=== 初始化工作空间 ==="
         mkdir -p workspace
         cd workspace
         
-        # 设置repo配置
-        export REPO_URL='https://gerrit.googlesource.com/git-repo'
+        # 初始化repo
+        echo "初始化repo..."
+        repo init -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git -b ${{ github.event.inputs.MANIFEST_BRANCH }} --depth=1
         
-        # 尝试初始化，最多重试3次
-        for i in {1..3}; do
-          echo "第 $i 次尝试初始化仓库..."
-          
-          if [ "${{ github.event.inputs.SYNC_METHOD }}" = "shallow" ]; then
-            repo init --depth=1 \
-              -u "${{ github.event.inputs.MANIFEST_URL }}" \
-              -b "${{ github.event.inputs.MANIFEST_BRANCH }}" \
-              --repo-url=$REPO_URL
-          else
-            repo init \
-              -u "${{ github.event.inputs.MANIFEST_URL }}" \
-              -b "${{ github.event.inputs.MANIFEST_BRANCH }}" \
-              --repo-url=$REPO_URL
-          fi
-          
-          if [ $? -eq 0 ]; then
-            echo "✅ 仓库初始化成功"
-            break
-          else
-            echo "❌ 初始化失败，等待10秒后重试..."
-            sleep 10
-            rm -rf .repo
-          fi
-        done
+        # 同步代码
+        echo "同步代码..."
+        repo sync -c -j$(nproc --all) --force-sync --no-clone-bundle --no-tags
         
-        # 检查是否初始化成功
-        if [ ! -d ".repo" ]; then
-          echo "❌ 仓库初始化失败，请检查网络连接或manifest URL"
-          exit 1
-        fi
-        
-        echo "workspace-folder=$(pwd)" >> $GITHUB_OUTPUT
+        echo "代码同步完成"
 
-    - name: Sync repo with timeout
-      id: sync_repo
-      timeout-minutes: 60
+    - name: Clone device tree
       run: |
-        echo "=== 同步仓库代码 ==="
-        cd workspace
-        
-        # 设置环境变量以优化同步
-        export REPO_SYNC_FLAGS="-j$(nproc --all) --no-clone-bundle --no-tags --force-sync"
-        
-        # 尝试同步，最多重试3次
-        for i in {1..3}; do
-          echo "第 $i 次尝试同步仓库..."
-          echo "开始时间: $(date)"
-          
-          # 使用timeout命令防止无限等待
-          timeout 1800 repo sync $REPO_SYNC_FLAGS
-          SYNC_EXIT_CODE=$?
-          
-          echo "结束时间: $(date)"
-          
-          if [ $SYNC_EXIT_CODE -eq 0 ]; then
-            echo "✅ 仓库同步成功"
-            break
-          elif [ $SYNC_EXIT_CODE -eq 124 ]; then
-            echo "⚠️ 同步超时，清理后重试..."
-            # 清理部分下载的内容
-            find .repo/project-objects -name "*.tmp" -delete 2>/dev/null || true
-            find .repo/projects -name "*.lock" -delete 2>/dev/null || true
-            sleep 10
-          else
-            echo "❌ 同步失败，退出码: $SYNC_EXIT_CODE"
-            echo "等待30秒后重试..."
-            sleep 30
-          fi
-        done
-        
-        # 检查同步是否成功
-        if [ ! -d "bootable/recovery" ]; then
-          echo "❌ 仓库同步不完整，缺少关键目录"
-          echo "当前目录结构:"
-          ls -la
-          exit 1
-        fi
-        
-        echo "✅ 仓库同步完成"
-        echo "同步后的目录大小:"
-        du -sh .
-
-    - name: Handle prebuilt device tree
-      if: github.event.inputs.DEVICE_TREE_SOURCE == 'prebuilt'
-      run: |
-        echo "=== 使用预置设备树 ==="
-        cd workspace
-        
-        # 从输入获取设备路径或自动生成
-        if [ -n "${{ github.event.inputs.DEVICE_PATH }}" ]; then
-          DEVICE_PATH="${{ github.event.inputs.DEVICE_PATH }}"
-        else
-          # 从设备树URL提取厂商和设备名
-          if [[ "${{ github.event.inputs.DEVICE_TREE_URL }}" =~ android_device_([^_]+)_([^_-]+) ]]; then
-            MANUFACTURER="${BASH_REMATCH[1]}"
-            DEVICE="${BASH_REMATCH[2]}"
-            DEVICE_PATH="device/$MANUFACTURER/$DEVICE"
-          else
-            echo "无法从URL提取设备路径，请手动指定DEVICE_PATH"
-            exit 1
-          fi
-        fi
-        
-        echo "设备树路径: $DEVICE_PATH"
-        
-        # 创建设备目录
-        mkdir -p $(dirname "$DEVICE_PATH")
-        
-        # 复制预置设备树
-        if [ -d "../$DEVICE_PATH" ]; then
-          echo "找到预置设备树，复制到源码目录"
-          cp -r "../$DEVICE_PATH" "$DEVICE_PATH"
-        else
-          echo "错误：未找到预置设备树"
-          echo "请确保设备树位于：$DEVICE_PATH"
-          exit 1
-        fi
-
-    - name: Generate device tree from boot.img
-      if: github.event.inputs.DEVICE_TREE_SOURCE == 'generate' && github.event.inputs.BOOT_IMG_URL != ''
-      run: |
-        echo "=== 从boot.img生成设备树 ==="
-        cd workspace
-        
-        # 安装twrpdtgen
-        pip3 install twrpdtgen
-        
-        # 从输入获取设备路径或自动生成
-        if [ -n "${{ github.event.inputs.DEVICE_PATH }}" ]; then
-          DEVICE_PATH="${{ github.event.inputs.DEVICE_PATH }}"
-          # 提取厂商和设备名
-          if [[ "$DEVICE_PATH" =~ device/([^/]+)/([^/]+) ]]; then
-            MANUFACTURER="${BASH_REMATCH[1]}"
-            DEVICE="${BASH_REMATCH[2]}"
-          fi
-        else
-          echo "使用generate模式时必须指定DEVICE_PATH"
-          exit 1
-        fi
-        
-        echo "设备树路径: $DEVICE_PATH"
-        
-        # 创建设备目录
-        mkdir -p $(dirname "$DEVICE_PATH")
-        
-        # 下载boot.img
-        echo "下载boot.img..."
-        wget --timeout=60 --tries=3 -O boot.img "${{ github.event.inputs.BOOT_IMG_URL }}"
-        
-        # 生成设备树
-        echo "生成设备树..."
-        python3 -m twrpdtgen -o "$DEVICE_PATH" boot.img
-        
-        # 清理临时文件
-        rm -f boot.img
-
-    - name: Clone external device tree
-      if: github.event.inputs.DEVICE_TREE_SOURCE == 'external' && github.event.inputs.DEVICE_TREE_URL != ''
-      run: |
-        echo "=== 克隆外部设备树 ==="
-        cd workspace
-        
-        # 从输入获取设备路径或自动生成
-        if [ -n "${{ github.event.inputs.DEVICE_PATH }}" ]; then
-          DEVICE_PATH="${{ github.event.inputs.DEVICE_PATH }}"
-        else
-          # 从设备树URL提取厂商和设备名
-          if [[ "${{ github.event.inputs.DEVICE_TREE_URL }}" =~ android_device_([^_]+)_([^_-]+) ]]; then
-            MANUFACTURER="${BASH_REMATCH[1]}"
-            DEVICE="${BASH_REMATCH[2]}"
-            DEVICE_PATH="device/$MANUFACTURER/$DEVICE"
-          else
-            echo "无法从URL提取设备路径，请手动指定DEVICE_PATH"
-            exit 1
-          fi
-        fi
-        
-        echo "设备树路径: $DEVICE_PATH"
-        
-        # 创建设备目录
-        mkdir -p $(dirname "$DEVICE_PATH")
-        
-        # 克隆外部设备树
-        echo "克隆设备树仓库..."
-        git clone --depth=1 --single-branch \
-          -b "${{ github.event.inputs.DEVICE_TREE_BRANCH }}" \
-          "${{ github.event.inputs.DEVICE_TREE_URL }}" \
-          "$DEVICE_PATH"
-        
-        # 检查是否克隆成功
-        if [ -d "$DEVICE_PATH" ]; then
-          echo "设备树克隆成功"
-        else
-          echo "错误：设备树克隆失败"
-          exit 1
-        fi
-
-    - name: Clone common tree
-      if: github.event.inputs.COMMON_TREE_URL != '' && github.event.inputs.COMMON_PATH != ''
-      run: |
-        echo "=== 克隆公共设备树 ==="
-        cd workspace
-        
-        # 创建公共设备树目录
-        mkdir -p $(dirname "${{ github.event.inputs.COMMON_PATH }}")
-        
-        # 克隆公共设备树
-        echo "克隆公共设备树仓库..."
-        git clone --depth=1 --single-branch \
-          -b "${{ github.event.inputs.DEVICE_TREE_BRANCH }}" \
-          "${{ github.event.inputs.COMMON_TREE_URL }}" \
-          "${{ github.event.inputs.COMMON_PATH }}"
-        
-        # 检查是否克隆成功
-        if [ -d "${{ github.event.inputs.COMMON_PATH }}" ]; then
-          echo "公共设备树克隆成功"
-        else
-          echo "错误：公共设备树克隆失败"
-          exit 1
-        fi
-
-    - name: Validate device tree
-      run: |
-        echo "=== 验证设备树 ==="
+        echo "=== 克隆设备树 ==="
         cd workspace
         
         # 确定设备树路径
         if [ -n "${{ github.event.inputs.DEVICE_PATH }}" ]; then
           DEVICE_PATH="${{ github.event.inputs.DEVICE_PATH }}"
-        elif [ "${{ github.event.inputs.DEVICE_TREE_SOURCE }}" = "external" ] && [[ "${{ github.event.inputs.DEVICE_TREE_URL }}" =~ android_device_([^_]+)_([^_-]+) ]]; then
-          MANUFACTURER="${BASH_REMATCH[1]}"
-          DEVICE="${BASH_REMATCH[2]}"
-          DEVICE_PATH="device/$MANUFACTURER/$DEVICE"
         else
-          echo "无法确定设备树路径"
-          exit 1
+          # 从设备名推断路径
+          if [[ "${{ github.event.inputs.DEVICE_NAME }}" =~ ^([^_]+)_([^_]+) ]]; then
+            MANUFACTURER="${BASH_REMATCH[1]}"
+            DEVICE="${BASH_REMATCH[2]}"
+            DEVICE_PATH="device/$MANUFACTURER/$DEVICE"
+          else
+            DEVICE_PATH="device/unknown/${{ github.event.inputs.DEVICE_NAME }}"
+          fi
         fi
         
         echo "设备树路径: $DEVICE_PATH"
         
+        # 创建目录
+        mkdir -p $(dirname $DEVICE_PATH)
+        
+        # 克隆设备树
+        if [ -n "${{ github.event.inputs.DEVICE_TREE_URL }}" ]; then
+          echo "从指定URL克隆设备树: ${{ github.event.inputs.DEVICE_TREE_URL }}"
+          git clone --depth=1 --branch=${{ github.event.inputs.DEVICE_TREE_BRANCH }} \
+            "${{ github.event.inputs.DEVICE_TREE_URL }}" "$DEVICE_PATH"
+        else
+          # 从TeamWin GitHub克隆
+          echo "从TeamWin GitHub克隆设备树: ${{ github.event.inputs.DEVICE_TREE_SOURCE }}"
+          git clone --depth=1 --branch=${{ github.event.inputs.DEVICE_TREE_BRANCH }} \
+            "https://github.com/${{ github.event.inputs.DEVICE_TREE_SOURCE }}" "$DEVICE_PATH"
+        fi
+        
+        # 检查是否克隆成功
         if [ -d "$DEVICE_PATH" ]; then
-          echo "设备树存在"
+          echo "✅ 设备树克隆成功"
           echo "设备树内容:"
           ls -la "$DEVICE_PATH/"
-          
-          # 检查必要的文件
-          if [ -f "$DEVICE_PATH/AndroidProducts.mk" ] || [ -f "$DEVICE_PATH/device.mk" ] || [ -f "$DEVICE_PATH/BoardConfig.mk" ]; then
-            echo "✅ 设备树文件结构正常"
-          else
-            echo "⚠️ 警告：设备树可能缺少必要的配置文件"
-            echo "找到的文件:"
-            find "$DEVICE_PATH" -name "*.mk" -o -name "*.sh" | head -20
-          fi
         else
-          echo "❌ 错误：设备树不存在"
-          echo "请检查设备树路径：$DEVICE_PATH"
+          echo "❌ 设备树克隆失败"
           exit 1
         fi
+
     - name: Setup device tree properly
       run: |
         echo "=== 设置设备树 ==="
@@ -731,136 +406,6 @@ EOF
           fi
         fi
 
-
-        
-        # 检查编译结果
-        if [ $? -eq 0 ]; then
-          echo "✅ 编译成功"
-        else
-          echo "❌ 编译失败"
-          exit 1
-        fi
-
-    - name: List build artifacts
-      run: |
-        echo "=== 列出编译产物 ==="
-        cd workspace
-        
-        OUTPUT_DIR="out/target/product/${{ env.DEVICE_NAME }}"
-        
-        if [ -d "$OUTPUT_DIR" ]; then
-          echo "输出目录: $OUTPUT_DIR"
-          echo "文件列表:"
-          ls -la "$OUTPUT_DIR/"
-          
-          # 查找特定文件
-          echo "查找镜像文件:"
-          find "$OUTPUT_DIR" -name "*.img" -o -name "*.zip" | sort
-          
-          # 检查主要输出文件
-          BUILD_TARGET="${{ github.event.inputs.BUILD_TARGET }}"
-          TARGET_FILE="$OUTPUT_DIR/$BUILD_TARGET.img"
-          
-          if [ -f "$TARGET_FILE" ]; then
-            echo "✅ 找到目标文件: $TARGET_FILE"
-            echo "文件大小: $(du -h "$TARGET_FILE" | cut -f1)"
-          else
-            echo "⚠️ 未找到目标文件: $TARGET_FILE"
-            echo "尝试查找其他文件..."
-            find "$OUTPUT_DIR" -name "*.img" -exec du -h {} \;
-          fi
-        else
-          echo "❌ 输出目录不存在: $OUTPUT_DIR"
-          exit 1
-        fi
-
-    - name: Create Release
-      if: ${{ github.event.inputs.CREATE_RELEASE == 'true' }}
-      uses: softprops/action-gh-release@v2
-      with:
-        files: |
-          workspace/out/target/product/${{ env.DEVICE_NAME }}/${{ github.event.inputs.BUILD_TARGET }}.img
-          workspace/out/target/product/${{ env.DEVICE_NAME }}/*.zip
-          workspace/out/target/product/${{ env.DEVICE_NAME }}/*vendor*.img
-        name: ${{ env.DEVICE_NAME }}-${{ github.run_id }}
-        tag_name: ${{ github.run_id }}
-        body: |
-          # TWRP Build Results
-          
-          ## Build Information
-          - **Manifest**: ${{ github.event.inputs.MANIFEST_BRANCH }}
-          - **Device**: ${{ env.DEVICE_NAME }}
-          - **Target**: ${{ github.event.inputs.BUILD_TARGET }}.img
-          - **Build ID**: ${{ github.run_id }}
-          - **Build Date**: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
-          
-          ## Device Tree Source
-          - **Source**: ${{ github.event.inputs.DEVICE_TREE_SOURCE }}
-          ${{ github.event.inputs.DEVICE_TREE_URL && format('**Device Tree URL**: {0}', github.event.inputs.DEVICE_TREE_URL) || '' }}
-          
-          ## Notes
-          - This is an automated build from GitHub Actions
-          - Flash at your own risk
-          - Always backup your data before flashing
-        draft: false
-        prerelease: false
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-    - name: Upload artifacts
-      if: ${{ github.event.inputs.CREATE_RELEASE != 'true' }}
-      uses: actions/upload-artifact@v4
-      with:
-        name: twrp-${{ env.DEVICE_NAME }}-${{ github.run_number }}
-        path: |
-          workspace/out/target/product/${{ env.DEVICE_NAME }}/${{ github.event.inputs.BUILD_TARGET }}.img
-          workspace/out/target/product/${{ env.DEVICE_NAME }}/*.zip
-          workspace/out/target/product/${{ env.DEVICE_NAME }}/*vendor*.img
-        retention-days: 7
-
-    - name: Cleanup
-      if: always()
-      run: |
-        echo "=== 清理工作空间 ==="
-        
-        # 关闭交换空间
-        if [ -f /swapfile ]; then
-          echo "关闭交换空间..."
-          sudo swapoff /swapfile || true
-          sudo rm -f /swapfile || true
-        fi
-        
-        # 显示ccache统计
-        echo "ccache统计:"
-        ccache -s || true
-        
-        # 显示磁盘使用情况
-        echo "磁盘使用情况:"
-        df -h
-        
-        echo "清理完成"
-
-    - name: Build Summary
-      if: always()
-      run: |
-        echo "=== 构建总结 ==="
-        echo "设备: ${{ env.DEVICE_NAME }}"
-        echo "Makefile: ${{ env.MAKEFILE_NAME }}"
-        echo "构建目标: ${{ github.event.inputs.BUILD_TARGET }}"
-        echo "构建ID: ${{ github.run_id }}"
-        echo "状态: ${{ job.status }}"
-        
-        if [ "${{ job.status }}" = "success" ]; then
-          echo "✅ 构建成功完成"
-          if [ "${{ github.event.inputs.CREATE_RELEASE }}" = "true" ]; then
-            echo "📦 Release已创建"
-          else
-            echo "📦 产物已上传到Artifacts"
-          fi
-        else
-          echo "❌ 构建失败"
-          echo "请检查日志以获取详细信息"
-        fi
     - name: Check build output
       run: |
         echo "=== 检查编译输出 ==="
@@ -892,7 +437,7 @@ EOF
 
     - name: List build artifacts
       run: |
-        echo "=== 列出编译产物 ==="
+                echo "=== 列出编译产物 ==="
         cd workspace
         
         # 首先查找所有可能的输出目录
