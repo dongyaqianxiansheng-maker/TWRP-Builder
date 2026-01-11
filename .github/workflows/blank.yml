@@ -27,6 +27,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-22.04
+    timeout-minutes: 360  # 6小时超时
     
     steps:
     - name: Checkout repository
@@ -66,40 +67,55 @@ jobs:
         mkdir -p ~/bin
         curl -s https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
         chmod a+x ~/bin/repo
-        # 直接导出 PATH 到当前 shell
         export PATH="$HOME/bin:$PATH"
         echo "PATH=$PATH" >> $GITHUB_ENV
-        echo "Repo tool installed at: $(which repo || echo 'not found')"
-    
-    - name: Verify repo tool
-      run: |
-        echo "当前 PATH: $PATH"
-        ls -la ~/bin/
-        ~/bin/repo --version
     
     - name: Initialize repo and sync
       run: |
         echo "=== 初始化 TWRP 仓库 ==="
         mkdir -p twrp-aosp
         cd twrp-aosp
-        ~/bin/repo init -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git -b ${{ github.event.inputs.manifest_branch }}
-        ~/bin/repo sync -j$(nproc) --force-sync --no-clone-bundle --no-tags
+        
+        # 设置 Git 配置以加速下载
+        git config --global http.postBuffer 524288000
+        git config --global https.postBuffer 524288000
+        
+        # 初始化仓库
+        ~/bin/repo init -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git -b ${{ github.event.inputs.manifest_branch }} --depth=1
+        
+        echo "=== 开始同步仓库 (这可能需要30-60分钟) ==="
+        echo "开始时间: $(date)"
+        
+        # 使用更少的线程和重试机制
+        ~/bin/repo sync -j4 --force-sync --no-clone-bundle --no-tags --fail-fast
+        
+        echo "同步完成时间: $(date)"
+        echo "同步完成，当前目录大小:"
+        du -sh .
     
     - name: Download boot.img
       run: |
+        echo "=== 下载 boot.img ==="
         cd twrp-aosp
         mkdir -p boot_images
         curl -L "${{ github.event.inputs.boot_img_url }}" -o boot_images/boot.img
+        
+        if [ -f "boot_images/boot.img" ]; then
+          echo "boot.img 下载成功，大小: $(ls -lh boot_images/boot.img | awk '{print \$5}')"
+        else
+          echo "boot.img 下载失败"
+          exit 1
+        fi
     
     - name: Install twrpdtgen and generate device tree
       run: |
+        echo "=== 安装 twrpdtgen 并生成设备树 ==="
         cd twrp-aosp
         pip3 install twrpdtgen
         
-        # 生成设备树
+        echo "正在生成设备树..."
         python3 -m twrpdtgen -o device/${{ github.event.inputs.device_manufacturer }}/${{ github.event.inputs.device_name }} boot_images/boot.img
         
-        # 检查是否生成成功
         if [ -d "device/${{ github.event.inputs.device_manufacturer }}/${{ github.event.inputs.device_name }}" ]; then
           echo "设备树生成成功"
         else
@@ -109,16 +125,33 @@ jobs:
     
     - name: Setup build environment
       run: |
+        echo "=== 设置编译环境 ==="
         cd twrp-aosp
-        . build/envsetup.sh
+        source build/envsetup.sh
         lunch omni_${{ github.event.inputs.device_name }}-eng
     
     - name: Build TWRP
       run: |
+        echo "=== 开始编译 TWRP ==="
         cd twrp-aosp
         export ALLOW_MISSING_DEPENDENCIES=true
         export LC_ALL=C
-        mka ${{ github.event.inputs.build_target }}
+        
+        echo "编译目标: ${{ github.event.inputs.build_target }}"
+        echo "开始编译时间: $(date)"
+        
+        # 使用更少的线程避免内存不足
+        mka -j2 ${{ github.event.inputs.build_target }}
+        
+        echo "编译完成时间: $(date)"
+        
+        if [ -d "out/target/product/${{ github.event.inputs.device_name }}" ]; then
+          echo "编译完成，输出文件:"
+          find out/target/product/${{ github.event.inputs.device_name }} -name "*.img" -o -name "*.zip" | xargs ls -lh
+        else
+          echo "编译失败，输出目录不存在"
+          exit 1
+        fi
     
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
