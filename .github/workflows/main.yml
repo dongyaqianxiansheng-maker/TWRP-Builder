@@ -173,12 +173,6 @@ jobs:
             zip \
             zlib1g-dev
         
-        # 安装Python2（如果需要）
-        echo "=== 安装Python2 ==="
-        sudo apt install -y python2.7 python2.7-dev
-        sudo ln -sf /usr/bin/python2.7 /usr/bin/python2
-        sudo ln -sf /usr/bin/python2 /usr/bin/python
-        
         # 配置Git优化
         git config --global user.name "GitHub Actions"
         git config --global user.email "github-actions@github.com"
@@ -478,4 +472,14 @@ jobs:
           else
             echo "⚠️ 警告：设备树可能缺少必要的配置文件"
             echo "找到的文件:"
-            find "$DEVICE_PATH" -name "*.mk" -o -name "*.sh"
+            find "$DEVICE_PATH" -name "*.mk" -o -name "*.sh" | head -20
+          fi
+        else
+          echo "❌ 错误：设备树不存在"
+          echo "请检查设备树路径：$DEVICE_PATH"
+          exit 1
+        fi
+
+    - name: Set Swap Space
+      run: |
+        echo "=== 
