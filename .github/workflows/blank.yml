@@ -23,15 +23,25 @@ on:
         description: '编译目标'
         default: 'bootimage'
         type: string
+      repo_depth:
+        description: '仓库深度 (1=浅克隆，0=完整克隆)'
+        default: '1'
+        type: string
 
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 360  # 6小时超时
     
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
+    
+    - name: Check disk space
+      run: |
+        echo "=== 检查磁盘空间 ==="
+        df -h
+        echo "可用空间:"
+        df -h /home/runner | tail -1
     
     - name: Setup environment
       run: |
@@ -61,6 +71,10 @@ jobs:
       run: |
         git config --global user.email "github-actions@github.com"
         git config --global user.name "GitHub Actions"
+        # 配置 Git 以节省空间
+        git config --global core.compression 0
+        git config --global core.loosecompression 0
+        git config --global pack.depth 1
     
     - name: Install repo tool
       run: |
@@ -70,28 +84,36 @@ jobs:
         export PATH="$HOME/bin:$PATH"
         echo "PATH=$PATH" >> $GITHUB_ENV
     
-    - name: Initialize repo and sync
+    - name: Initialize repo with shallow clone
       run: |
-        echo "=== 初始化 TWRP 仓库 ==="
+        echo "=== 初始化 TWRP 仓库 (浅克隆) ==="
         mkdir -p twrp-aosp
         cd twrp-aosp
         
-        # 设置 Git 配置以加速下载
-        git config --global http.postBuffer 524288000
-        git config --global https.postBuffer 524288000
+        # 使用浅克隆节省空间
+        if [ "${{ github.event.inputs.repo_depth }}" = "1" ]; then
+          echo "使用浅克隆模式"
+          ~/bin/repo init -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git -b ${{ github.event.inputs.manifest_branch }} --depth=1
+        else
+          echo "使用完整克隆模式"
+          ~/bin/repo init -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git -b ${{ github.event.inputs.manifest_branch }}
+        fi
+    
+    - name: Sync repo with limited threads
+      run: |
+        echo "=== 同步仓库 ==="
+        cd twrp-aosp
         
-        # 初始化仓库
-        ~/bin/repo init -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git -b ${{ github.event.inputs.manifest_branch }} --depth=1
+        # 限制同步线程数以减少内存和磁盘使用
+        SYNC_JOBS=2
         
-        echo "=== 开始同步仓库 (这可能需要30-60分钟) ==="
-        echo "开始时间: $(date)"
+        # 分步同步，先同步主要仓库
+        echo "第一步：同步主要仓库..."
+        ~/bin/repo sync -j$SYNC_JOBS --force-sync --no-clone-bundle --no-tags --current-branch
         
-        # 使用更少的线程和重试机制
-        ~/bin/repo sync -j4 --force-sync --no-clone-bundle --no-tags --fail-fast
-        
-        echo "同步完成时间: $(date)"
-        echo "同步完成，当前目录大小:"
-        du -sh .
+        # 检查磁盘空间
+        echo "同步后磁盘空间:"
+        df -h /home/runner | tail -1
     
     - name: Download boot.img
       run: |
@@ -101,7 +123,8 @@ jobs:
         curl -L "${{ github.event.inputs.boot_img_url }}" -o boot_images/boot.img
         
         if [ -f "boot_images/boot.img" ]; then
-          echo "boot.img 下载成功，大小: $(ls -lh boot_images/boot.img | awk '{print \$5}')"
+          echo "boot.img 下载成功"
+          ls -lh boot_images/
         else
           echo "boot.img 下载失败"
           exit 1
@@ -113,15 +136,32 @@ jobs:
         cd twrp-aosp
         pip3 install twrpdtgen
         
+        # 生成设备树
         echo "正在生成设备树..."
         python3 -m twrpdtgen -o device/${{ github.event.inputs.device_manufacturer }}/${{ github.event.inputs.device_name }} boot_images/boot.img
         
+        # 检查是否生成成功
         if [ -d "device/${{ github.event.inputs.device_manufacturer }}/${{ github.event.inputs.device_name }}" ]; then
           echo "设备树生成成功"
         else
           echo "设备树生成失败"
           exit 1
         fi
+    
+    - name: Clean up unnecessary files before build
+      run: |
+        echo "=== 清理不必要的文件以释放空间 ==="
+        cd twrp-aosp
+        
+        # 删除不需要的目录
+        echo "删除不必要的文件..."
+        find . -name "*.git" -type d -prune -exec rm -rf {} + 2>/dev/null || true
+        find . -name ".repo" -type d -prune -exec rm -rf {} + 2>/dev/null || true
+        
+        # 检查磁盘空间
+        echo "清理后磁盘空间:"
+        df -h /home/runner | tail -1
+        du -sh . || true
     
     - name: Setup build environment
       run: |
@@ -130,28 +170,45 @@ jobs:
         source build/envsetup.sh
         lunch omni_${{ github.event.inputs.device_name }}-eng
     
-    - name: Build TWRP
+    - name: Build TWRP with limited resources
       run: |
         echo "=== 开始编译 TWRP ==="
         cd twrp-aosp
+        
+        # 设置编译参数以节省资源
         export ALLOW_MISSING_DEPENDENCIES=true
         export LC_ALL=C
         
-        echo "编译目标: ${{ github.event.inputs.build_target }}"
-        echo "开始编译时间: $(date)"
+        # 使用更少的线程编译
+        BUILD_JOBS=2
         
-        # 使用更少的线程避免内存不足
-        mka -j2 ${{ github.event.inputs.build_target }}
+        echo "使用 $BUILD_JOBS 个线程编译"
+        make -j$BUILD_JOBS ${{ github.event.inputs.build_target }}
         
-        echo "编译完成时间: $(date)"
-        
+        # 检查编译结果
         if [ -d "out/target/product/${{ github.event.inputs.device_name }}" ]; then
-          echo "编译完成，输出文件:"
-          find out/target/product/${{ github.event.inputs.device_name }} -name "*.img" -o -name "*.zip" | xargs ls -lh
+          echo "编译完成"
+          ls -la out/target/product/${{ github.event.inputs.device_name }}/
         else
-          echo "编译失败，输出目录不存在"
+          echo "编译失败"
           exit 1
         fi
+    
+    - name: Clean up after build
+      run: |
+        echo "=== 编译后清理 ==="
+        cd twrp-aosp
+        
+        # 删除中间文件以节省空间
+        echo "删除中间文件..."
+        rm -rf out/soong/.intermediates || true
+        rm -rf out/.lock || true
+        rm -rf out/.module_paths || true
+        rm -rf out/.bootstrap || true
+        
+        # 检查最终磁盘使用
+        echo "最终磁盘空间:"
+        df -h /home/runner | tail -1
     
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
