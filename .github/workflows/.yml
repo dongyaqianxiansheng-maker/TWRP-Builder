@@ -1,0 +1,333 @@
+name: TWRP Build Optimized
+
+on:
+  workflow_dispatch:
+    inputs:
+      DEVICE_NAME:
+        description: '设备名称（如: davinci）'
+        required: true
+        default: ''
+      MANUFACTURER:
+        description: '厂商名称（如: xiaomi）'
+        required: true
+        default: ''
+      DEVICE_TREE_URL:
+        description: '设备树仓库URL'
+        required: true
+        default: ''
+      DEVICE_TREE_BRANCH:
+        description: '设备树分支'
+        required: true
+        default: 'twrp-12.1'
+      DEVICE_PATH:
+        description: '设备树路径（如: device/xiaomi/davinci）'
+        required: true
+        default: ''
+      COMMON_TREE_URL:
+        description: '通用设备树URL（可选）'
+        required: false
+        default: ''
+      COMMON_PATH:
+        description: '通用设备树路径（如: device/xiaomi/sm6150-common）'
+        required: false
+        default: ''
+      BUILD_TARGET:
+        description: '构建目标'
+        required: true
+        default: 'recoveryimage'
+        type: choice
+        options:
+          - recoveryimage
+          - bootimage
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Get workspace path
+      id: pwd
+      run: |
+        echo "workspace-folder=$(pwd)" >> $GITHUB_OUTPUT
+        
+    - name: Setup environment
+      run: |
+        echo "=== 安装最小化依赖 ==="
+        sudo apt-get update
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+          git-core python2 python3 openjdk-8-jdk \
+          bc bison build-essential ccache curl flex g++-multilib gcc-multilib \
+          git gnupg gperf imagemagick lib32ncurses5-dev lib32readline-dev \
+          lib32z1-dev liblz4-tool libncurses5-dev libsdl1.2-dev libssl-dev \
+          libwxgtk3.0-gtk3-dev libxml2 libxml2-utils lzop pngcrush \
+          rsync schedtool squashfs-tools xsltproc zip zlib1g-dev \
+          repo
+        
+        # 设置python2
+        sudo ln -sf /usr/bin/python2 /usr/bin/python
+        
+        # 配置git
+        git config --global user.email "github-actions@github.com"
+        git config --global user.name "GitHub Actions"
+        
+    - name: Set Swap Space
+      uses: pierotofy/set-swap-space@master
+      with:
+        swap-size-gb: 12
+        
+    - name: Check disk space
+      run: |
+        echo "=== 磁盘空间检查 ==="
+        df -h
+        echo "内存信息:"
+        free -h
+        echo "交换空间:"
+        swapon --show
+        
+    - name: Initialize minimal repo
+      run: |
+        echo "=== 初始化最小化仓库 ==="
+        
+        # 创建构建目录
+        mkdir -p twrp-build
+        cd twrp-build
+        
+        # 使用最小化manifest
+        repo init --depth=1 \
+          -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git \
+          -b ${{ github.event.inputs.DEVICE_TREE_BRANCH }}
+        
+    - name: Clone device tree
+      run: |
+        echo "=== 克隆设备树 ==="
+        echo "设备树URL: ${{ github.event.inputs.DEVICE_TREE_URL }}"
+        echo "分支: ${{ github.event.inputs.DEVICE_TREE_BRANCH }}"
+        echo "路径: ${{ github.event.inputs.DEVICE_PATH }}"
+        
+        # 创建父目录
+        mkdir -p $(dirname "${{ github.event.inputs.DEVICE_PATH }}")
+        
+        # 克隆设备树
+        git clone \
+          --depth=1 \
+          --single-branch \
+          -b "${{ github.event.inputs.DEVICE_TREE_BRANCH }}" \
+          "${{ github.event.inputs.DEVICE_TREE_URL }}" \
+          "./${{ github.event.inputs.DEVICE_PATH }}"
+          
+        echo "设备树克隆完成"
+        ls -la "./${{ github.event.inputs.DEVICE_PATH }}"
+        
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}/twrp-build
+      
+    - name: Clone common tree
+      if: |
+        github.event.inputs.COMMON_TREE_URL != ''
+        && github.event.inputs.COMMON_PATH != ''
+      run: |
+        echo "=== 克隆通用设备树 ==="
+        echo "通用树URL: ${{ github.event.inputs.COMMON_TREE_URL }}"
+        echo "路径: ${{ github.event.inputs.COMMON_PATH }}"
+        
+        # 创建父目录
+        mkdir -p $(dirname "${{ github.event.inputs.COMMON_PATH }}")
+        
+        # 克隆通用设备树
+        git clone \
+          --depth=1 \
+          --single-branch \
+          -b "${{ github.event.inputs.DEVICE_TREE_BRANCH }}" \
+          "${{ github.event.inputs.COMMON_TREE_URL }}" \
+          "./${{ github.event.inputs.COMMON_PATH }}"
+          
+        echo "通用设备树克隆完成"
+        
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}/twrp-build
+      
+    - name: Create local manifest
+      run: |
+        echo "=== 创建本地manifest ==="
+        
+        # 创建本地manifest目录
+        mkdir -p .repo/local_manifests
+        
+        # 创建本地manifest文件
+        cat > .repo/local_manifests/local.xml << 'EOF'
+        <?xml version="1.0" encoding="UTF-8"?>
+        <manifest>
+          <!-- 添加设备树 -->
+          <project path="${{ github.event.inputs.DEVICE_PATH }}" 
+                   name="device-tree" 
+                   remote="device-tree" 
+                   revision="${{ github.event.inputs.DEVICE_TREE_BRANCH }}" />
+EOF
+
+        # 如果有通用设备树，添加到manifest
+        if [ -n "${{ github.event.inputs.COMMON_TREE_URL }}" ] && [ -n "${{ github.event.inputs.COMMON_PATH }}" ]; then
+          cat >> .repo/local_manifests/local.xml << 'EOF'
+          <!-- 添加通用设备树 -->
+          <project path="${{ github.event.inputs.COMMON_PATH }}" 
+                   name="common-tree" 
+                   remote="common-tree" 
+                   revision="${{ github.event.inputs.DEVICE_TREE_BRANCH }}" />
+EOF
+        fi
+
+        # 添加移除不需要项目的部分
+        cat >> .repo/local_manifests/local.xml << 'EOF'
+          
+          <!-- 移除不需要的大项目以节省空间 -->
+          <remove-project name="platform/prebuilts/clang" />
+          <remove-project name="platform/prebuilts/gcc" />
+          <remove-project name="platform/prebuilts/ndk" />
+          <remove-project name="platform/external/chromium-webview" />
+          <remove-project name="platform/external/chromium" />
+          <remove-project name="platform/packages/apps" />
+          <remove-project name="platform/frameworks/base" />
+        </manifest>
+EOF
+        
+        echo "本地manifest内容:"
+        cat .repo/local_manifests/local.xml
+        
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}/twrp-build
+      
+    - name: Add remotes to manifest
+      run: |
+        echo "=== 添加远程仓库到manifest ==="
+        
+        # 读取现有的manifest
+        MANIFEST_FILE=".repo/local_manifests/local.xml"
+        
+        # 使用sed替换远程仓库URL
+        if [ -f "$MANIFEST_FILE" ]; then
+          # 备份原始文件
+          cp "$MANIFEST_FILE" "${MANIFEST_FILE}.bak"
+          
+          # 替换设备树远程URL
+          sed -i "s|<project path=\"${{ github.event.inputs.DEVICE_PATH }}\".*|<project path=\"${{ github.event.inputs.DEVICE_PATH }}\" name=\"$(basename ${{ github.event.inputs.DEVICE_TREE_URL }} .git)\" remote=\"device-tree\" revision=\"${{ github.event.inputs.DEVICE_TREE_BRANCH }}\" />|" "$MANIFEST_FILE"
+          
+          # 如果有通用设备树，替换其远程URL
+          if [ -n "${{ github.event.inputs.COMMON_TREE_URL }}" ] && [ -n "${{ github.event.inputs.COMMON_PATH }}" ]; then
+            sed -i "s|<project path=\"${{ github.event.inputs.COMMON_PATH }}\".*|<project path=\"${{ github.event.inputs.COMMON_PATH }}\" name=\"$(basename ${{ github.event.inputs.COMMON_TREE_URL }} .git)\" remote=\"common-tree\" revision=\"${{ github.event.inputs.DEVICE_TREE_BRANCH }}\" />|" "$MANIFEST_FILE"
+          fi
+          
+          echo "更新后的manifest内容:"
+          cat "$MANIFEST_FILE"
+        fi
+        
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}/twrp-build
+      
+    - name: Sync minimal repo
+      timeout-minutes: 30
+      run: |
+        echo "=== 同步最小化仓库 ==="
+        
+        # 设置同步参数
+        export REPO_SYNC_FLAGS="-c -j$(nproc) --no-tags --no-clone-bundle --optimized-fetch --prune"
+        
+        # 尝试同步，最多重试3次
+        for i in {1..3}; do
+          echo "第 $i 次尝试同步..."
+          repo sync $REPO_SYNC_FLAGS
+          
+          if [ $? -eq 0 ]; then
+            echo "✅ 同步成功"
+            break
+          else
+            echo "❌ 同步失败，等待10秒后重试..."
+            sleep 10
+          fi
+        done
+        
+        # 检查同步结果
+        if [ ! -d "bootable/recovery" ]; then
+          echo "警告：可能缺少一些目录，但继续构建..."
+        fi
+        
+        echo "同步完成后的磁盘使用:"
+        df -h
+        
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}/twrp-build
+      
+    - name: Clean up space before build
+      run: |
+        echo "=== 编译前清理空间 ==="
+        
+        # 清理各种缓存
+        sudo apt-get clean
+        sudo apt-get autoclean
+        sudo rm -rf /var/lib/apt/lists/*
+        sudo rm -rf /tmp/*
+        sudo rm -rf ~/.cache/pip
+        
+        # 清理repo缓存
+        if [ -d ".repo/project-objects" ]; then
+          find .repo/project-objects -name "*.tmp" -delete 2>/dev/null || true
+        fi
+        
+        echo "清理后的磁盘空间:"
+        df -h
+        
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}/twrp-build
+      
+    - name: Setup build environment
+      run: |
+        echo "=== 设置编译环境 ==="
+        
+        # 加载环境变量
+        source build/envsetup.sh
+        
+        # 设置设备
+        lunch omni_${{ github.event.inputs.DEVICE_NAME }}-eng
+        
+        # 启用ccache
+        export USE_CCACHE=1
+        export CCACHE_EXEC=/usr/bin/ccache
+        ccache -M 2G
+        
+        # 允许缺失依赖
+        export ALLOW_MISSING_DEPENDENCIES=true
+        
+        echo "环境设置完成"
+        
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}/twrp-build
+      
+    - name: Build TWRP
+      timeout-minutes: 90
+      run: |
+        echo "=== 开始编译 ==="
+        echo "编译目标: ${{ github.event.inputs.BUILD_TARGET }}"
+        echo "开始时间: $(date)"
+        
+        # 开始编译
+        make -j$(nproc) ${{ github.event.inputs.BUILD_TARGET }}
+        
+        echo "编译结束时间: $(date)"
+        
+        # 检查编译结果
+        BUILD_OUT="out/target/product/${{ github.event.inputs.DEVICE_NAME }}"
+        if [ -f "$BUILD_OUT/${{ github.event.inputs.BUILD_TARGET }}.img" ]; then
+          echo "✅ 编译成功!"
+          ls -lh "$BUILD_OUT/${{ github.event.inputs.BUILD_TARGET }}.img"
+        else
+          echo "❌ 编译失败，未找到输出文件"
+          # 尝试查找其他可能的输出文件
+          echo "查找所有可能的输出文件:"
+          find "$BUILD_OUT" -name "*.img" -o -name "*.zip" | head -20
+          exit 1
+        fi
+        
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}/twrp-build
+      
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: twrp-${{ github.event.inputs.DEVICE_NAME }}-${{ github.run_number }}
+        path: |
+          ${{ steps.pwd.outputs.workspace-folder }}/twrp-build/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*.img
+          ${{ steps.pwd.outputs.workspace-folder }}/twrp-build/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*.zip
+        retention-days: 7
