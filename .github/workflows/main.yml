@@ -1,505 +1,336 @@
-    - name: Setup device tree properly
+name: TWRP Recovery Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      manufacturer:
+        description: '设备制造商 (如: xiaomi, asus)'
+        required: true
+        default: 'asus'
+      device:
+        description: '设备型号 (如: I003D, davinci)'
+        required: true
+        default: 'I003D'
+      device_tree_url:
+        description: '设备树仓库URL'
+        required: true
+        default: 'https://github.com/TeamWin/android_device_asus_I003D'
+      device_tree_branch:
+        description: '设备树分支'
+        required: true
+        default: 'android-12.1'
+      manifest_branch:
+        description: 'TWRP manifest分支'
+        required: true
+        default: 'twrp-12.1'
+      build_target:
+        description: '编译目标'
+        required: true
+        default: 'recovery'
+        type: choice
+        options:
+          - recovery
+          - boot
+
+env:
+  MANIFEST_URL: "https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git"
+  WORKSPACE_DIR: "${{ github.workspace }}/twrp-build"
+  DEVICE_PATH: "device/${{ inputs.manufacturer }}/${{ inputs.device }}"
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+    permissions:
+      contents: write
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Display build parameters
       run: |
-        echo "=== 设置设备树 ==="
-        cd workspace
+        echo "=== 构建参数 ==="
+        echo "设备制造商: ${{ inputs.manufacturer }}"
+        echo "设备型号: ${{ inputs.device }}"
+        echo "设备树URL: ${{ inputs.device_tree_url }}"
+        echo "设备树分支: ${{ inputs.device_tree_branch }}"
+        echo "Manifest分支: ${{ inputs.manifest_branch }}"
+        echo "编译目标: ${{ inputs.build_target }}"
+        echo "工作目录: $WORKSPACE_DIR"
+        echo "设备路径: $DEVICE_PATH"
         
-        # 确定设备树路径
-        if [ -n "${{ github.event.inputs.DEVICE_PATH }}" ]; then
-          DEVICE_PATH="${{ github.event.inputs.DEVICE_PATH }}"
-        else
-          # 对于 dove_evb4，使用正确的路径
-          if [ "${{ github.event.inputs.DEVICE_NAME }}" = "dove_evb4" ]; then
-            DEVICE_PATH="device/samsung/dove_evb4"
-          else
-            # 尝试从设备名推断厂商
-            if [[ "${{ github.event.inputs.DEVICE_NAME }}" =~ ^([^_]+)_([^_]+) ]]; then
-              MANUFACTURER="${BASH_REMATCH[1]}"
-              DEVICE="${BASH_REMATCH[2]}"
-              DEVICE_PATH="device/$MANUFACTURER/$DEVICE"
-            else
-              # 默认使用generic作为厂商
-              DEVICE_PATH="device/generic/${{ github.event.inputs.DEVICE_NAME }}"
-            fi
-          fi
-        fi
-        
-        echo "设备树路径: $DEVICE_PATH"
-        
-        # 检查设备树是否存在
-        if [ -d "$DEVICE_PATH" ]; then
-          echo "✅ 设备树存在"
-          
-          # 显示设备树内容
-          echo "设备树内容:"
-          ls -la "$DEVICE_PATH/"
-          
-          # 检查必要的配置文件
-          echo "检查配置文件..."
-          
-          # 查找AndroidProducts.mk
-          if [ -f "$DEVICE_PATH/AndroidProducts.mk" ]; then
-            echo "✅ 找到 AndroidProducts.mk"
-            
-            # 读取产品名称
-            PRODUCT_NAME=$(grep -o 'PRODUCT_NAME\s*:=\s*[^ ]*' "$DEVICE_PATH/AndroidProducts.mk" | head -1 | awk -F':=' '{print \$2}' | xargs)
-            if [ -n "$PRODUCT_NAME" ]; then
-              echo "产品名称: $PRODUCT_NAME"
-              echo "PRODUCT_NAME=$PRODUCT_NAME" >> $GITHUB_ENV
-            fi
-          fi
-          
-          # 查找所有.mk文件
-          echo "查找所有.mk文件:"
-          find "$DEVICE_PATH" -name "*.mk" | head -10
-          
-          # 检查是否有vendorsetup.sh
-          if [ -f "$DEVICE_PATH/vendorsetup.sh" ]; then
-            echo "✅ 找到 vendorsetup.sh"
-            echo "vendorsetup.sh内容:"
-            cat "$DEVICE_PATH/vendorsetup.sh"
-            
-            # 执行vendorsetup.sh
-            source "$DEVICE_PATH/vendorsetup.sh"
-          else
-            echo "⚠️ 未找到 vendorsetup.sh，将手动创建"
-            
-            # 手动创建vendorsetup.sh
-            VENDORSETUP_FILE="$DEVICE_PATH/vendorsetup.sh"
-            echo "创建 $VENDORSETUP_FILE"
-            
-            # 确定产品名称
-            if [ -n "${{ github.event.inputs.MAKEFILE_NAME }}" ]; then
-              PRODUCT_NAME="${{ github.event.inputs.MAKEFILE_NAME }}"
-            else
-              PRODUCT_NAME="twrp_${{ github.event.inputs.DEVICE_NAME }}"
-            fi
-            
-            cat > "$VENDORSETUP_FILE" << 'EOF'
-add_lunch_combo ${PRODUCT_NAME}-eng
-add_lunch_combo ${PRODUCT_NAME}-userdebug
-add_lunch_combo ${PRODUCT_NAME}-user
-EOF
-            
-            chmod +x "$VENDORSETUP_FILE"
-            echo "vendorsetup.sh内容:"
-            cat "$VENDORSETUP_FILE"
-          fi
-          
-          # 检查并修复AndroidProducts.mk
-          if [ ! -f "$DEVICE_PATH/AndroidProducts.mk" ]; then
-            echo "⚠️ 未找到 AndroidProducts.mk，创建..."
-            cat > "$DEVICE_PATH/AndroidProducts.mk" << 'EOF'
-PRODUCT_MAKEFILES := \
-    $(LOCAL_DIR)/${PRODUCT_NAME}.mk
-
-COMMON_LUNCH_CHOICES := \
-    ${PRODUCT_NAME}-eng \
-    ${PRODUCT_NAME}-userdebug \
-    ${PRODUCT_NAME}-user
-EOF
-          fi
-          
-          # 检查并修复设备.mk文件
-          DEVICE_MK_FILE="$DEVICE_PATH/${PRODUCT_NAME}.mk"
-          if [ ! -f "$DEVICE_MK_FILE" ]; then
-            echo "⚠️ 未找到 $DEVICE_MK_FILE，创建..."
-            
-            # 查找现有的.mk文件
-            EXISTING_MK=$(find "$DEVICE_PATH" -name "*.mk" ! -name "AndroidProducts.mk" | head -1)
-            if [ -n "$EXISTING_MK" ]; then
-              echo "使用现有文件: $EXISTING_MK"
-              cp "$EXISTING_MK" "$DEVICE_MK_FILE"
-            else
-              cat > "$DEVICE_MK_FILE" << 'EOF'
-$(call inherit-product, device/samsung/dove_evb4/device.mk)
-
-# Inherit from those products. Most specific first.
-$(call inherit-product, $(SRC_TARGET_DIR)/product/core_64_bit.mk)
-$(call inherit-product, $(SRC_TARGET_DIR)/product/full_base_telephony.mk)
-
-# Inherit some common TWRP stuff.
-$(call inherit-product, vendor/twrp/config/common.mk)
-
-# Device identifier. This must come after all inclusions
-PRODUCT_DEVICE := ${{ github.event.inputs.DEVICE_NAME }}
-PRODUCT_NAME := ${PRODUCT_NAME}
-PRODUCT_BRAND := samsung
-PRODUCT_MODEL := dove_evb4
-PRODUCT_MANUFACTURER := samsung
-EOF
-            fi
-          fi
-        else
-          echo "❌ 错误：设备树不存在于 $DEVICE_PATH"
-          echo "当前目录结构:"
-          find . -name "*${{ github.event.inputs.DEVICE_NAME }}*" -type d | head -20
-          echo "device目录内容:"
-          find device -type d 2>/dev/null | head -20
-          exit 1
-        fi
-    - name: Start compilation
-      timeout-minutes: 120
+    - name: Clean workspace
       run: |
-        echo "=== 开始编译 ==="
-        cd workspace
+        echo "=== 清理工作空间 ==="
+        rm -rf "$WORKSPACE_DIR"
+        mkdir -p "$WORKSPACE_DIR"
         
-        # 回到源码根目录
-        echo "当前目录: $(pwd)"
+    - name: Install dependencies for Ubuntu 22.04
+      run: |
+        echo "=== 安装依赖包 (Ubuntu 22.04) ==="
+        sudo apt-get update
+        sudo apt-get install -y \
+          git-core gnupg flex bison build-essential zip curl zlib1g-dev \
+          gcc-multilib g++-multilib libc6-dev-i386 lib32ncurses5-dev \
+          x11proto-core-dev libx11-dev lib32z1-dev libgl1-mesa-dev \
+          libxml2-utils xsltproc unzip fontconfig libncurses5 \
+          libncurses5-dev libssl-dev liblz4-tool imagemagick ccache \
+          bc lzop schedtool squashfs-tools pngcrush rsync python2 \
+          python3 python3-pip tree libbz2-dev lzma ncftp \
+          lib32readline-dev lib32z1-dev libsdl1.2-dev libgtk-3-dev \
+          libglu1-mesa-dev freeglut3-dev qemu-user-static
         
-        # 加载编译环境变量
-        echo "加载编译环境..."
+        # Ubuntu 22.04 特定包名
+        sudo apt-get install -y \
+          libstdc++-10-dev \
+          libncurses6 \
+          libreadline8 \
+          gcc-10-multilib \
+          g++-10-multilib
+        
+        # 设置 Python 2 为默认
+        sudo update-alternatives --install /usr/bin/python python /usr/bin/python2 1
+        sudo update-alternatives --install /usr/bin/python python /usr/bin/python3 2
+        sudo update-alternatives --set python /usr/bin/python2
+        
+        echo "Python 版本:"
+        python --version
+        
+    - name: Setup Java
+      uses: actions/setup-java@v4
+      with:
+        distribution: 'zulu'
+        java-version: '11'
+        
+    - name: Configure Git
+      run: |
+        echo "=== 配置 Git ==="
+        git config --global user.email "github-actions@github.com"
+        git config --global user.name "GitHub Actions"
+        
+    - name: Install repo tool
+      run: |
+        echo "=== 安装 repo 工具 ==="
+        mkdir -p ~/bin
+        curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
+        chmod a+x ~/bin/repo
+        sudo ln -sf ~/bin/repo /usr/bin/repo
+        
+    - name: Initialize TWRP repository
+      run: |
+        echo "=== 初始化 TWRP 仓库 ==="
+        cd "$WORKSPACE_DIR"
+        
+        # 使用浅克隆减少下载量
+        repo init \
+          --depth=1 \
+          -u "$MANIFEST_URL" \
+          -b "${{ inputs.manifest_branch }}" \
+          --repo-rev=stable
+        
+        echo "初始化完成"
+        
+    - name: Clone device tree
+      run: |
+        echo "=== 克隆设备树 ==="
+        cd "$WORKSPACE_DIR"
+        
+        # 先创建设备目录
+        mkdir -p "$(dirname "$DEVICE_PATH")"
+        
+        # 克隆设备树
+        git clone \
+          --depth=1 \
+          --branch "${{ inputs.device_tree_branch }}" \
+          "${{ inputs.device_tree_url }}" \
+          "$DEVICE_PATH"
+        
+        echo "设备树克隆完成"
+        
+    - name: Create local manifest for optimization
+      run: |
+        echo "=== 创建本地 manifest 优化同步 ==="
+        cd "$WORKSPACE_DIR"
+        
+        mkdir -p .repo/local_manifests
+        cat > .repo/local_manifests/local_manifest.xml << EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<manifest>
+  <!-- 移除不需要的大型项目以减少下载量 -->
+  <remove-project name="platform/prebuilts/clang/host/linux-x86" />
+  <remove-project name="platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9" />
+  <remove-project name="platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9" />
+  <remove-project name="platform/prebuilts/gcc/linux-x86/x86/x86_64-linux-android-4.9" />
+  <remove-project name="platform/prebuilts/android-emulator" />
+  <remove-project name="platform/prebuilts/qemu-kernel" />
+  
+  <!-- 已经手动克隆的设备树 -->
+  <project path="$DEVICE_PATH" 
+           name="${{ inputs.device_tree_url }}"
+           remote="github"
+           revision="${{ inputs.device_tree_branch }}"
+           clone-depth="1" />
+</manifest>
+EOF
+        
+        echo "本地 manifest 创建完成"
+        
+    - name: Sync repository with optimization
+      run: |
+        echo "=== 同步代码 (优化版) ==="
+        cd "$WORKSPACE_DIR"
+        
+        # 优化同步参数，减少内存使用
+        repo sync \
+          -c \
+          -j4 \
+          --force-sync \
+          --no-clone-bundle \
+          --no-tags \
+          --optimized-fetch \
+          --prune
+        
+        echo "同步完成"
+        echo "当前目录大小:"
+        du -sh .
+        
+    - name: Setup swap space
+      uses: pierotofy/set-swap-space@master
+      with:
+        swap-size-gb: 8
+        
+    - name: Setup build environment
+      run: |
+        echo "=== 设置编译环境 ==="
+        cd "$WORKSPACE_DIR"
+        
+        # 加载环境变量
         source build/envsetup.sh
         
-        # 首先尝试添加设备树到lunch菜单
-        echo "添加设备树到lunch菜单..."
-        
-        # 确定设备树路径
-        if [ -n "${{ github.event.inputs.DEVICE_PATH }}" ]; then
-          DEVICE_PATH="${{ github.event.inputs.DEVICE_PATH }}"
+        # 确定 lunch 目标
+        # 首先检查设备树中的 makefile
+        if [ -f "$DEVICE_PATH/AndroidProducts.mk" ]; then
+          # 尝试从 AndroidProducts.mk 读取
+          PRODUCT_MAKEFILE=$(grep -o 'PRODUCT_MAKEFILE := [^ ]*' "$DEVICE_PATH/AndroidProducts.mk" | cut -d' ' -f3)
+          if [ -n "$PRODUCT_MAKEFILE" ]; then
+            PRODUCT_NAME=$(basename "$PRODUCT_MAKEFILE" .mk)
+            LUNCH_TARGET="${PRODUCT_NAME}-eng"
+          else
+            # 回退到默认命名
+            LUNCH_TARGET="twrp_${{ inputs.device }}-eng"
+          fi
+        elif [ -f "$DEVICE_PATH/omni_${{ inputs.device }}.mk" ]; then
+          LUNCH_TARGET="omni_${{ inputs.device }}-eng"
+        elif [ -f "$DEVICE_PATH/twrp_${{ inputs.device }}.mk" ]; then
+          LUNCH_TARGET="twrp_${{ inputs.device }}-eng"
         else
-          DEVICE_PATH="device/samsung/dove_evb4"
+          # 最终回退
+          LUNCH_TARGET="twrp_${{ inputs.device }}-eng"
         fi
         
-        # 检查并执行vendorsetup.sh
-        if [ -f "$DEVICE_PATH/vendorsetup.sh" ]; then
-          echo "执行 vendorsetup.sh..."
-          source "$DEVICE_PATH/vendorsetup.sh"
-        fi
+        echo "Lunch 目标: $LUNCH_TARGET"
+        echo "LUNCH_TARGET=$LUNCH_TARGET" >> $GITHUB_ENV
         
-        # 确定lunch参数
-        if [ -n "${{ env.PRODUCT_NAME }}" ]; then
-          LUNCH_TARGET="${{ env.PRODUCT_NAME }}-eng"
-        elif [ -n "${{ github.event.inputs.MAKEFILE_NAME }}" ]; then
-          LUNCH_TARGET="${{ github.event.inputs.MAKEFILE_NAME }}-eng"
-        else
-          LUNCH_TARGET="twrp_${{ github.event.inputs.DEVICE_NAME }}-eng"
-        fi
+        # 执行 lunch
+        lunch "$LUNCH_TARGET"
         
-        echo "选择设备: $LUNCH_TARGET"
+    - name: Build recovery image
+      run: |
+        echo "=== 编译 ${{ inputs.build_target }} 镜像 ==="
+        cd "$WORKSPACE_DIR"
         
-        # 尝试使用lunch
-        if ! lunch $LUNCH_TARGET; then
-          echo "⚠️ lunch命令失败，尝试替代方案..."
-          
-          # 方案1: 直接设置环境变量
-          echo "尝试方案1: 直接设置环境变量..."
-          export TARGET_DEVICE="${{ github.event.inputs.DEVICE_NAME }}"
-          export TARGET_PRODUCT="twrp_${{ github.event.inputs.DEVICE_NAME }}"
-          export TARGET_BUILD_VARIANT="eng"
-          export TARGET_BUILD_TYPE="release"
-          
-          echo "手动设置的环境变量:"
-          echo "TARGET_DEVICE: $TARGET_DEVICE"
-          echo "TARGET_PRODUCT: $TARGET_PRODUCT"
-          echo "TARGET_BUILD_VARIANT: $TARGET_BUILD_VARIANT"
-          
-          # 方案2: 使用mka直接编译
-          echo "尝试方案2: 直接编译..."
-        fi
-        
-        # 设置编译环境
+        # 设置环境变量
         export ALLOW_MISSING_DEPENDENCIES=true
         export LC_ALL=C
-        export SOONG_ALLOW_MISSING_DEPENDENCIES=true
-        export TW_DEVICE_VERSION="${{ github.event.inputs.DEVICE_NAME }}"
+        export USE_CCACHE=1
+        export CCACHE_EXEC=/usr/bin/ccache
+        ccache -M 10G
         
-        # 设置输出目录
-        export OUT_DIR_COMMON_BASE=$(pwd)/out
+        # 清理之前的构建
+        make clean
         
-        echo "编译环境设置完成"
-        echo "当前环境变量:"
-        env | grep -E "TARGET|PRODUCT|DEVICE" | sort
+        # 开始编译
+        make "${{ inputs.build_target }}image" -j$(nproc --all)
         
-        # 根据构建目标选择编译命令
-        BUILD_TARGET="${{ github.event.inputs.BUILD_TARGET }}"
-        echo "构建目标: $BUILD_TARGET"
+        echo "编译完成"
         
-        # 设置并行编译线程数
-        export MAKEFLAGS="-j$(nproc --all)"
-        
-        # 编译命令
-        if [ "$BUILD_TARGET" = "recovery" ]; then
-          echo "编译recovery镜像..."
-          make -j$(nproc --all) recoveryimage
-        elif [ "$BUILD_TARGET" = "boot" ]; then
-          echo "编译boot镜像..."
-          make -j$(nproc --all) bootimage
-        else
-          echo "错误：未知的构建目标: $BUILD_TARGET"
-          exit 1
-        fi
-        
-        # 检查编译结果
-        COMPILE_EXIT_CODE=$?
-        if [ $COMPILE_EXIT_CODE -eq 0 ]; then
-          echo "✅ 编译成功"
-        else
-          echo "❌ 编译失败，退出码: $COMPILE_EXIT_CODE"
-          
-          # 尝试使用mka
-          echo "尝试使用mka编译..."
-          if [ "$BUILD_TARGET" = "recovery" ]; then
-            mka recoveryimage || {
-              echo "❌ mka也失败"
-              exit 1
-            }
-          elif [ "$BUILD_TARGET" = "boot" ]; then
-            mka bootimage || {
-              echo "❌ mka也失败"
-              exit 1
-            }
-          fi
-        fi
-
-    - name: Check build output
+    - name: Verify build artifacts
       run: |
-        echo "=== 检查编译输出 ==="
-        cd workspace
+        echo "=== 验证构建产物 ==="
+        OUTPUT_DIR="$WORKSPACE_DIR/out/target/product/${{ inputs.device }}"
         
-        echo "查找所有输出文件:"
-        find out -name "*.img" -o -name "*.zip" -o -name "*.bin" 2>/dev/null | head -20
-        
-        echo "out目录结构:"
-        find out -type d 2>/dev/null | head -30
-        
-        # 检查编译是否真的成功
-        if [ -d "out" ]; then
-          echo "✅ out目录存在"
-          IMG_COUNT=$(find out -name "*.img" 2>/dev/null | wc -l)
-          echo "找到 $IMG_COUNT 个.img文件"
+        if [ -d "$OUTPUT_DIR" ]; then
+          echo "输出目录: $OUTPUT_DIR"
+          echo "找到的文件:"
+          find "$OUTPUT_DIR" -name "*.img" -o -name "*.zip" -o -name "*.md5" | xargs ls -lh 2>/dev/null || true
           
-          if [ $IMG_COUNT -eq 0 ]; then
-            echo "⚠️ 警告：未找到任何.img文件，编译可能未生成预期输出"
-            echo "检查编译日志..."
-            if [ -f "out/error.log" ]; then
-              tail -50 out/error.log
-            fi
-          fi
-        else
-          echo "❌ out目录不存在，编译可能失败"
-          exit 1
-        fi
-
-    - name: List build artifacts
-      run: |
-        echo "=== 列出编译产物 ==="
-        cd workspace
-        
-        # 首先查找所有可能的输出目录
-        echo "查找所有输出目录:"
-        find out/target/product -type d -name "*dove*" 2>/dev/null || true
-        find out/target/product -type d 2>/dev/null | head -20
-        
-        # 确定设备名称
-        if [ -n "${{ env.DEVICE_NAME }}" ]; then
-          DEVICE_NAME="${{ env.DEVICE_NAME }}"
-        else
-          DEVICE_NAME="dove_evb4"
-        fi
-        
-        # 尝试不同的输出路径
-        OUTPUT_PATHS=(
-          "out/target/product/$DEVICE_NAME"
-          "out/target/product/twrp_$DEVICE_NAME"
-          "out/target/product/omni_$DEVICE_NAME"
-        )
-        
-        OUTPUT_DIR=""
-        for path in "${OUTPUT_PATHS[@]}"; do
-          if [ -d "$path" ]; then
-            OUTPUT_DIR="$path"
-            echo "✅ 找到输出目录: $OUTPUT_DIR"
-            break
-          fi
-        done
-        
-        if [ -z "$OUTPUT_DIR" ]; then
-          echo "⚠️ 未找到标准输出目录，尝试查找第一个存在的目录..."
-          OUTPUT_DIR=$(find out/target/product -type d -name "*" | head -1)
-          if [ -n "$OUTPUT_DIR" ]; then
-            echo "使用目录: $OUTPUT_DIR"
+          # 检查主要产物
+          if [ -f "$OUTPUT_DIR/${{ inputs.build_target }}.img" ]; then
+            echo "✅ 主要产物存在: $OUTPUT_DIR/${{ inputs.build_target }}.img"
+            echo "文件大小: $(du -h "$OUTPUT_DIR/${{ inputs.build_target }}.img" | cut -f1)"
           else
-            echo "❌ 未找到任何输出目录"
-            echo "out目录结构:"
-            find out -type d 2>/dev/null | head -30
+            echo "❌ 主要产物不存在"
+            # 尝试查找其他可能的产物
+            echo "尝试查找其他产物..."
+            find "$OUTPUT_DIR" -name "*.img" -type f | head -5
             exit 1
           fi
+        else
+          echo "❌ 输出目录不存在"
+          exit 1
         fi
         
-        echo "输出目录: $OUTPUT_DIR"
-        echo "文件列表:"
-        ls -la "$OUTPUT_DIR/"
-        
-        # 查找特定文件
-        echo "查找镜像文件:"
-        find "$OUTPUT_DIR" -name "*.img" -o -name "*.zip" -o -name "*.bin" | sort
-        
-        # 检查主要输出文件
-        BUILD_TARGET="${{ github.event.inputs.BUILD_TARGET }}"
-        
-        # 尝试不同的文件名模式
-        TARGET_FILES=(
-          "$OUTPUT_DIR/$BUILD_TARGET.img"
-          "$OUTPUT_DIR/recovery.img"
-          "$OUTPUT_DIR/boot.img"
-          "$OUTPUT_DIR/twrp_$DEVICE_NAME.img"
-          "$OUTPUT_DIR/omni_$DEVICE_NAME.img"
-        )
-        
-        FOUND_FILE=""
-        for file in "${TARGET_FILES[@]}"; do
-          if [ -f "$file" ]; then
-            FOUND_FILE="$file"
-            echo "✅ 找到目标文件: $FOUND_FILE"
-            echo "文件大小: $(du -h "$FOUND_FILE" | cut -f1)"
-            break
-          fi
-        done
-        
-        if [ -z "$FOUND_FILE" ]; then
-          echo "⚠️ 未找到标准目标文件，列出所有.img文件:"
-          find "$OUTPUT_DIR" -name "*.img" -exec du -h {} \;
-          
-          # 获取第一个.img文件
-          FIRST_IMG=$(find "$OUTPUT_DIR" -name "*.img" | head -1)
-          if [ -n "$FIRST_IMG" ]; then
-            FOUND_FILE="$FIRST_IMG"
-            echo "使用第一个找到的.img文件: $FOUND_FILE"
-          fi
-        fi
-        
-        # 保存找到的文件路径到环境变量
-        if [ -n "$FOUND_FILE" ]; then
-          echo "FOUND_FILE=$FOUND_FILE" >> $GITHUB_ENV
-          echo "OUTPUT_DIR=$OUTPUT_DIR" >> $GITHUB_ENV
-          
-          # 获取所有要上传的文件
-          ALL_FILES=$(find "$OUTPUT_DIR" -name "*.img" -o -name "*.zip" -o -name "*.bin" | tr '\n' ' ')
-          echo "ALL_FILES=$ALL_FILES" >> $GITHUB_ENV
-          
-          echo "所有找到的文件:"
-          echo "$ALL_FILES"
-        fi
-
-    - name: Auto Create Release
-      if: ${{ github.event.inputs.CREATE_RELEASE == 'true' && env.FOUND_FILE != '' }}
-      id: create_release
+    - name: Create GitHub Release
       uses: softprops/action-gh-release@v2
       with:
         files: |
-          ${{ env.FOUND_FILE }}
-          ${{ env.OUTPUT_DIR }}/*.zip
-          ${{ env.OUTPUT_DIR }}/*vendor*.img
-          ${{ env.OUTPUT_DIR }}/*.bin
-        name: TWRP-${{ env.DEVICE_NAME }}-${{ github.run_number }}
-        tag_name: v${{ github.run_number }}
+          ${{ env.WORKSPACE_DIR }}/out/target/product/${{ inputs.device }}/${{ inputs.build_target }}.img
+          ${{ env.WORKSPACE_DIR }}/out/target/product/${{ inputs.device }}/*.zip
+          ${{ env.WORKSPACE_DIR }}/out/target/product/${{ inputs.device }}/*recovery*.img
+          ${{ env.WORKSPACE_DIR }}/out/target/product/${{ inputs.device }}/*boot*.img
+        name: ${{ inputs.device }}-TWRP-${{ github.run_number }}
+        tag_name: build-${{ github.run_number }}
         body: |
-          # TWRP Build Results
+          # TWRP Recovery Build
           
-          ## Build Information
-          - **Build ID**: ${{ github.run_number }}
-          - **Device**: ${{ env.DEVICE_NAME }}
-          - **Target**: ${{ github.event.inputs.BUILD_TARGET }}
-          - **Manifest**: ${{ github.event.inputs.MANIFEST_BRANCH }}
-          - **Build Date**: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          ## 构建信息
+          - **设备**: ${{ inputs.manufacturer }}/${{ inputs.device }}
+          - **构建目标**: ${{ inputs.build_target }}
+          - **构建编号**: ${{ github.run_number }}
+          - **构建时间**: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          - **设备树**: ${{ inputs.device_tree_url }}@${{ inputs.device_tree_branch }}
+          - **Manifest**: ${{ env.MANIFEST_URL }}@${{ inputs.manifest_branch }}
           
-          ## Device Information
-          - **Device Tree Source**: ${{ github.event.inputs.DEVICE_TREE_SOURCE }}
-          ${{ github.event.inputs.DEVICE_TREE_URL && format('- **Device Tree**: {0}', github.event.inputs.DEVICE_TREE_URL) || '' }}
-          ${{ github.event.inputs.DEVICE_PATH && format('- **Device Path**: {0}', github.event.inputs.DEVICE_PATH) || '' }}
+          ## 使用说明
+          1. 下载对应的镜像文件
+          2. 使用 fastboot 刷入: `fastboot flash ${{ inputs.build_target }} <filename>.img`
+          3. 重启到 recovery: `fastboot reboot recovery`
           
-          ## Build Files
-          $(echo "以下文件已包含在此Release中:" && for file in ${{ env.ALL_FILES }}; do echo "- \`$(basename "$file")\`"; done)
-          
-          ## Installation Instructions
-          1. Download the appropriate recovery/boot image for your device
-          2. Reboot to bootloader/fastboot mode
-          3. Flash using: `fastboot flash ${{ github.event.inputs.BUILD_TARGET }} <filename>.img`
-          4. Reboot to recovery: `fastboot reboot recovery`
-          
-          ## Notes
-          - This is an automated build from GitHub Actions
-          - Flash at your own risk
-          - Always backup your data before flashing
-          - Report issues in the repository's Issues section
-        draft: false
-        prerelease: false
-        generate_release_notes: true
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-    - name: Auto Upload to Release (Fallback)
-      if: ${{ github.event.inputs.CREATE_RELEASE == 'true' && env.FOUND_FILE == '' }}
-      uses: softprops/action-gh-release@v2
-      with:
-        files: |
-          workspace/out/target/product/*/*.img
-          workspace/out/target/product/*/*.zip
-          workspace/out/target/product/*/*.bin
-        name: TWRP-${{ env.DEVICE_NAME }}-${{ github.run_number }}-fallback
-        tag_name: v${{ github.run_number }}-fallback
-        body: |
-          # TWRP Build Results (Fallback)
-          
-          ## Build Information
-          - **Build ID**: ${{ github.run_number }}
-          - **Device**: ${{ env.DEVICE_NAME }}
-          - **Status**: Fallback mode - files found via wildcard search
-          - **Build Date**: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
-          
-          ## Notes
-          - This release was created in fallback mode
-          - The build may have generated files in non-standard locations
-          - Please verify the files before flashing
+          ## 注意事项
+          - 刷机有风险，请备份重要数据
+          - 确保设备已解锁 bootloader
+          - 仅适用于指定设备型号
         draft: false
         prerelease: false
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-    - name: Upload artifacts to GitHub
-      if: ${{ github.event.inputs.CREATE_RELEASE != 'true' && env.FOUND_FILE != '' }}
+        
+    - name: Upload artifacts as backup
+      if: always()
       uses: actions/upload-artifact@v4
       with:
-        name: twrp-${{ env.DEVICE_NAME }}-${{ github.run_number }}
+        name: twrp-build-artifacts-${{ inputs.device }}-${{ github.run_number }}
         path: |
-          ${{ env.FOUND_FILE }}
-          ${{ env.OUTPUT_DIR }}/*.zip
-          ${{ env.OUTPUT_DIR }}/*vendor*.img
-          ${{ env.OUTPUT_DIR }}/*.bin
+          ${{ env.WORKSPACE_DIR }}/out/target/product/${{ inputs.device }}/
         retention-days: 7
-      continue-on-error: true
-
-    - name: Upload artifacts fallback
-      if: ${{ github.event.inputs.CREATE_RELEASE != 'true' && env.FOUND_FILE == '' }}
-      uses: actions/upload-artifact@v4
-      with:
-        name: twrp-${{ env.DEVICE_NAME }}-${{ github.run_number }}-fallback
-        path: |
-          workspace/out/target/product/*/*.img
-          workspace/out/target/product/*/*.zip
-          workspace/out/target/product/*/*.bin
-        retention-days: 7
-      continue-on-error: true
-
-    - name: Release Summary
-      if: ${{ github.event.inputs.CREATE_RELEASE == 'true' }}
+        if-no-files-found: error
+        
+    - name: Cleanup workspace
+      if: always()
       run: |
-        echo "=== Release 创建总结 ==="
-        echo "✅ Release 已成功创建"
-        echo "设备: ${{ env.DEVICE_NAME }}"
-        echo "Release 名称: TWRP-${{ env.DEVICE_NAME }}-${{ github.run_number }}"
-        echo "Tag: v${{ github.run_number }}"
-        
-        if [ -n "${{ env.FOUND_FILE }}" ]; then
-          echo "主要文件: ${{ env.FOUND_FILE }}"
-          echo "文件大小: $(du -h "${{ env.FOUND_FILE }}" 2>/dev/null | cut -f1 || echo '未知')"
-        fi
-        
-        echo "所有文件:"
-        for file in ${{ env.ALL_FILES }}; do
-          echo "- $(basename "$file")"
-        done
-        
-        # 生成Release URL
-        REPO_NAME="${{ github.repository }}"
-        echo "Release URL: https://github.com/$REPO_NAME/releases/tag/v${{ github.run_number }}"
+        echo "=== 清理工作空间 ==="
+        echo "构建完成，清理中间文件..."
+        # 显示最终磁盘使用情况
+        echo "最终磁盘使用:"
+        df -h
