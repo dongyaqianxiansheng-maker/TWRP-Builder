@@ -27,15 +27,6 @@ on:
         description: '编译目标'
         required: true
         default: 'recovery'
-        type: choice
-        options:
-          - recovery
-          - boot
-
-env:
-  MANIFEST_URL: "https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git"
-  WORKSPACE_DIR: "${{ github.workspace }}/twrp-build"
-  DEVICE_PATH: "device/${{ inputs.manufacturer }}/${{ inputs.device }}"
 
 jobs:
   build:
@@ -51,20 +42,18 @@ jobs:
     - name: Display build parameters
       run: |
         echo "=== 构建参数 ==="
-        echo "设备制造商: ${{ inputs.manufacturer }}"
-        echo "设备型号: ${{ inputs.device }}"
-        echo "设备树URL: ${{ inputs.device_tree_url }}"
-        echo "设备树分支: ${{ inputs.device_tree_branch }}"
-        echo "Manifest分支: ${{ inputs.manifest_branch }}"
-        echo "编译目标: ${{ inputs.build_target }}"
-        echo "工作目录: $WORKSPACE_DIR"
-        echo "设备路径: $DEVICE_PATH"
+        echo "设备制造商: ${{ github.event.inputs.manufacturer }}"
+        echo "设备型号: ${{ github.event.inputs.device }}"
+        echo "设备树URL: ${{ github.event.inputs.device_tree_url }}"
+        echo "设备树分支: ${{ github.event.inputs.device_tree_branch }}"
+        echo "Manifest分支: ${{ github.event.inputs.manifest_branch }}"
+        echo "编译目标: ${{ github.event.inputs.build_target }}"
         
     - name: Clean workspace
       run: |
         echo "=== 清理工作空间 ==="
-        rm -rf "$WORKSPACE_DIR"
-        mkdir -p "$WORKSPACE_DIR"
+        rm -rf "${{ github.workspace }}/twrp-build"
+        mkdir -p "${{ github.workspace }}/twrp-build"
         
     - name: Install dependencies for Ubuntu 22.04
       run: |
@@ -120,13 +109,13 @@ jobs:
     - name: Initialize TWRP repository
       run: |
         echo "=== 初始化 TWRP 仓库 ==="
-        cd "$WORKSPACE_DIR"
+        cd "${{ github.workspace }}/twrp-build"
         
         # 使用浅克隆减少下载量
         repo init \
           --depth=1 \
-          -u "$MANIFEST_URL" \
-          -b "${{ inputs.manifest_branch }}" \
+          -u "https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git" \
+          -b "${{ github.event.inputs.manifest_branch }}" \
           --repo-rev=stable
         
         echo "初始化完成"
@@ -134,27 +123,27 @@ jobs:
     - name: Clone device tree
       run: |
         echo "=== 克隆设备树 ==="
-        cd "$WORKSPACE_DIR"
+        cd "${{ github.workspace }}/twrp-build"
         
-        # 先创建设备目录
-        mkdir -p "$(dirname "$DEVICE_PATH")"
+        # 创建设备目录
+        mkdir -p "device/${{ github.event.inputs.manufacturer }}/${{ github.event.inputs.device }}"
         
         # 克隆设备树
         git clone \
           --depth=1 \
-          --branch "${{ inputs.device_tree_branch }}" \
-          "${{ inputs.device_tree_url }}" \
-          "$DEVICE_PATH"
+          --branch "${{ github.event.inputs.device_tree_branch }}" \
+          "${{ github.event.inputs.device_tree_url }}" \
+          "device/${{ github.event.inputs.manufacturer }}/${{ github.event.inputs.device }}"
         
         echo "设备树克隆完成"
         
     - name: Create local manifest for optimization
       run: |
         echo "=== 创建本地 manifest 优化同步 ==="
-        cd "$WORKSPACE_DIR"
+        cd "${{ github.workspace }}/twrp-build"
         
         mkdir -p .repo/local_manifests
-        cat > .repo/local_manifests/local_manifest.xml << EOF
+        cat > .repo/local_manifests/local_manifest.xml << 'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
 <manifest>
   <!-- 移除不需要的大型项目以减少下载量 -->
@@ -164,13 +153,6 @@ jobs:
   <remove-project name="platform/prebuilts/gcc/linux-x86/x86/x86_64-linux-android-4.9" />
   <remove-project name="platform/prebuilts/android-emulator" />
   <remove-project name="platform/prebuilts/qemu-kernel" />
-  
-  <!-- 已经手动克隆的设备树 -->
-  <project path="$DEVICE_PATH" 
-           name="${{ inputs.device_tree_url }}"
-           remote="github"
-           revision="${{ inputs.device_tree_branch }}"
-           clone-depth="1" />
 </manifest>
 EOF
         
@@ -179,7 +161,7 @@ EOF
     - name: Sync repository with optimization
       run: |
         echo "=== 同步代码 (优化版) ==="
-        cd "$WORKSPACE_DIR"
+        cd "${{ github.workspace }}/twrp-build"
         
         # 优化同步参数，减少内存使用
         repo sync \
@@ -203,13 +185,14 @@ EOF
     - name: Setup build environment
       run: |
         echo "=== 设置编译环境 ==="
-        cd "$WORKSPACE_DIR"
+        cd "${{ github.workspace }}/twrp-build"
         
         # 加载环境变量
         source build/envsetup.sh
         
         # 确定 lunch 目标
-        # 首先检查设备树中的 makefile
+        DEVICE_PATH="device/${{ github.event.inputs.manufacturer }}/${{ github.event.inputs.device }}"
+        
         if [ -f "$DEVICE_PATH/AndroidProducts.mk" ]; then
           # 尝试从 AndroidProducts.mk 读取
           PRODUCT_MAKEFILE=$(grep -o 'PRODUCT_MAKEFILE := [^ ]*' "$DEVICE_PATH/AndroidProducts.mk" | cut -d' ' -f3)
@@ -218,15 +201,15 @@ EOF
             LUNCH_TARGET="${PRODUCT_NAME}-eng"
           else
             # 回退到默认命名
-            LUNCH_TARGET="twrp_${{ inputs.device }}-eng"
+            LUNCH_TARGET="twrp_${{ github.event.inputs.device }}-eng"
           fi
-        elif [ -f "$DEVICE_PATH/omni_${{ inputs.device }}.mk" ]; then
-          LUNCH_TARGET="omni_${{ inputs.device }}-eng"
-        elif [ -f "$DEVICE_PATH/twrp_${{ inputs.device }}.mk" ]; then
-          LUNCH_TARGET="twrp_${{ inputs.device }}-eng"
+        elif [ -f "$DEVICE_PATH/omni_${{ github.event.inputs.device }}.mk" ]; then
+          LUNCH_TARGET="omni_${{ github.event.inputs.device }}-eng"
+        elif [ -f "$DEVICE_PATH/twrp_${{ github.event.inputs.device }}.mk" ]; then
+          LUNCH_TARGET="twrp_${{ github.event.inputs.device }}-eng"
         else
           # 最终回退
-          LUNCH_TARGET="twrp_${{ inputs.device }}-eng"
+          LUNCH_TARGET="twrp_${{ github.event.inputs.device }}-eng"
         fi
         
         echo "Lunch 目标: $LUNCH_TARGET"
@@ -237,8 +220,8 @@ EOF
         
     - name: Build recovery image
       run: |
-        echo "=== 编译 ${{ inputs.build_target }} 镜像 ==="
-        cd "$WORKSPACE_DIR"
+        echo "=== 编译 ${{ github.event.inputs.build_target }} 镜像 ==="
+        cd "${{ github.workspace }}/twrp-build"
         
         # 设置环境变量
         export ALLOW_MISSING_DEPENDENCIES=true
@@ -251,14 +234,14 @@ EOF
         make clean
         
         # 开始编译
-        make "${{ inputs.build_target }}image" -j$(nproc --all)
+        make "${{ github.event.inputs.build_target }}image" -j$(nproc --all)
         
         echo "编译完成"
         
     - name: Verify build artifacts
       run: |
         echo "=== 验证构建产物 ==="
-        OUTPUT_DIR="$WORKSPACE_DIR/out/target/product/${{ inputs.device }}"
+        OUTPUT_DIR="${{ github.workspace }}/twrp-build/out/target/product/${{ github.event.inputs.device }}"
         
         if [ -d "$OUTPUT_DIR" ]; then
           echo "输出目录: $OUTPUT_DIR"
@@ -266,9 +249,9 @@ EOF
           find "$OUTPUT_DIR" -name "*.img" -o -name "*.zip" -o -name "*.md5" | xargs ls -lh 2>/dev/null || true
           
           # 检查主要产物
-          if [ -f "$OUTPUT_DIR/${{ inputs.build_target }}.img" ]; then
-            echo "✅ 主要产物存在: $OUTPUT_DIR/${{ inputs.build_target }}.img"
-            echo "文件大小: $(du -h "$OUTPUT_DIR/${{ inputs.build_target }}.img" | cut -f1)"
+          if [ -f "$OUTPUT_DIR/${{ github.event.inputs.build_target }}.img" ]; then
+            echo "✅ 主要产物存在: $OUTPUT_DIR/${{ github.event.inputs.build_target }}.img"
+            echo "文件大小: $(du -h "$OUTPUT_DIR/${{ github.event.inputs.build_target }}.img" | cut -f1)"
           else
             echo "❌ 主要产物不存在"
             # 尝试查找其他可能的产物
@@ -285,26 +268,26 @@ EOF
       uses: softprops/action-gh-release@v2
       with:
         files: |
-          ${{ env.WORKSPACE_DIR }}/out/target/product/${{ inputs.device }}/${{ inputs.build_target }}.img
-          ${{ env.WORKSPACE_DIR }}/out/target/product/${{ inputs.device }}/*.zip
-          ${{ env.WORKSPACE_DIR }}/out/target/product/${{ inputs.device }}/*recovery*.img
-          ${{ env.WORKSPACE_DIR }}/out/target/product/${{ inputs.device }}/*boot*.img
-        name: ${{ inputs.device }}-TWRP-${{ github.run_number }}
+          ${{ github.workspace }}/twrp-build/out/target/product/${{ github.event.inputs.device }}/${{ github.event.inputs.build_target }}.img
+          ${{ github.workspace }}/twrp-build/out/target/product/${{ github.event.inputs.device }}/*.zip
+          ${{ github.workspace }}/twrp-build/out/target/product/${{ github.event.inputs.device }}/*recovery*.img
+          ${{ github.workspace }}/twrp-build/out/target/product/${{ github.event.inputs.device }}/*boot*.img
+        name: ${{ github.event.inputs.device }}-TWRP-${{ github.run_number }}
         tag_name: build-${{ github.run_number }}
         body: |
           # TWRP Recovery Build
           
           ## 构建信息
-          - **设备**: ${{ inputs.manufacturer }}/${{ inputs.device }}
-          - **构建目标**: ${{ inputs.build_target }}
+          - **设备**: ${{ github.event.inputs.manufacturer }}/${{ github.event.inputs.device }}
+          - **构建目标**: ${{ github.event.inputs.build_target }}
           - **构建编号**: ${{ github.run_number }}
           - **构建时间**: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
-          - **设备树**: ${{ inputs.device_tree_url }}@${{ inputs.device_tree_branch }}
-          - **Manifest**: ${{ env.MANIFEST_URL }}@${{ inputs.manifest_branch }}
+          - **设备树**: ${{ github.event.inputs.device_tree_url }}@${{ github.event.inputs.device_tree_branch }}
+          - **Manifest**: https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git@${{ github.event.inputs.manifest_branch }}
           
           ## 使用说明
           1. 下载对应的镜像文件
-          2. 使用 fastboot 刷入: `fastboot flash ${{ inputs.build_target }} <filename>.img`
+          2. 使用 fastboot 刷入: `fastboot flash ${{ github.event.inputs.build_target }} <filename>.img`
           3. 重启到 recovery: `fastboot reboot recovery`
           
           ## 注意事项
@@ -320,9 +303,9 @@ EOF
       if: always()
       uses: actions/upload-artifact@v4
       with:
-        name: twrp-build-artifacts-${{ inputs.device }}-${{ github.run_number }}
+        name: twrp-build-artifacts-${{ github.event.inputs.device }}-${{ github.run_number }}
         path: |
-          ${{ env.WORKSPACE_DIR }}/out/target/product/${{ inputs.device }}/
+          ${{ github.workspace }}/twrp-build/out/target/product/${{ github.event.inputs.device }}/
         retention-days: 7
         if-no-files-found: error
         
